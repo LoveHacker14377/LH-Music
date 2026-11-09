@@ -19,7 +19,7 @@ import java.nio.ByteBuffer
 /** JNI over `exclusive_output.cpp`. Handles are opaque ids, never pointers. */
 internal object ExclusiveNative {
     init {
-        System.loadLibrary("bitchord_exclusive")
+        runCatching { System.loadLibrary("bitchord_exclusive") }
     }
 
     external fun open(rate: Int, channels: Int, bits: Int, device: Int): Long

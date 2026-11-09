@@ -20,7 +20,7 @@ import java.nio.ByteBuffer
 /** JNI over `usb_transport.cpp`. Handles are opaque ids, never pointers. */
 internal object UsbDirectNative {
     init {
-        System.loadLibrary("bitchord_usb")
+        runCatching { System.loadLibrary("bitchord_usb") }
     }
 
     /** [candidates] holds [CANDIDATE_INTS] values per candidate, in preference order. */

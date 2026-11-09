@@ -70,8 +70,7 @@ val betaSuffix = rootProject.extra["bitchordBetaSuffix"] as String
 
 android {
     namespace = "com.music.bitchord"
-    // InnerTubeX's AAR requires compiling against 37; targetSdk (runtime behaviour) stays 36.
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.music.bitchord"
@@ -103,52 +102,13 @@ android {
         buildConfigField("String", "UPDATE_APK_PREFIX", "\"BitChord-\"")
     }
 
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("armeabi-v7a", "arm64-v8a", "x86_64")
-            isUniversalApk = true
-        }
-    }
-
-    // The phone <-> watch protocol, one file shared with the watch app so the
-    // two cannot drift. See wearos/protocol/.../WearProtocol.kt.
-    sourceSets {
-        getByName("main") { java.srcDir("../wearos/protocol") }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-
-    // applicationId can only be overridden per flavor, not per build type, so a
-    // dev/prod dimension exists purely to let both sit installed side by side
-    // on the same device instead of the dev build overwriting the prod one.
-    flavorDimensions += "env"
-    productFlavors {
-        create("dev") {
-            dimension = "env"
-            applicationId = "com.dev.bitchord"
-            resValue("string", "app_name", "BitChord Dev")
-        }
-        create("prod") {
-            dimension = "env"
-            // Matches defaultConfig — this is the package already shipped/installed.
-        }
-    }
-
     signingConfigs {
-        // Both halves have to be there, not just the properties file: it *names*
-        // the keystore rather than containing it, and both are gitignored
-        // separately, so a checkout can easily end up with the one and not the
-        // other. A signing config pointing at a keystore that is not on disk
-        // fails the release build outright at validateSigningRelease — which is
-        // exactly the failure the unsigned fallback above exists to avoid, so
-        // the keystore has to be looked for rather than assumed.
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         val store = signing.getProperty("storeFile")?.let { rootProject.file(it) }
         if (store != null && store.exists()) {
             create("release") {
@@ -162,48 +122,17 @@ android {
 
     buildTypes {
         debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
             if (betaSuffix.isNotEmpty()) versionNameSuffix = "-$betaSuffix"
         }
         release {
-            // Carried here too — see [betaSuffix]. A sideloaded beta is a
-            // release build, and it is the one that most needs the marker.
             if (betaSuffix.isNotEmpty()) versionNameSuffix = "-$betaSuffix"
-            /*
-             * On for what it does to speed, not size. Compose is written to be
-             * run through R8 — without it every composable keeps the debug-era
-             * shape the compiler emits, and the whole UI runs measurably slower.
-             *
-             * Nothing is renamed (-dontobfuscate), and every library that reaches
-             * for classes by name — Rhino running YouTube's player JavaScript,
-             * NewPipe, InnerTubeX, QuickJS, SMBJ and BouncyCastle, ONNX's JNI,
-             * protobuf-lite, Ktor — is kept whole: see proguard-rules.pro. What R8
-             * is left to optimise is Compose, Media3, coroutines and our own
-             * code, which is where the time goes. Checked on a device through the
-             * `benchmark` build type below before it ships.
-             */
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Null without a keystore to sign with: the build then produces
-            // app-release-unsigned.apk instead of failing outright.
             signingConfig = signingConfigs.findByName("release")
-        }
-        /*
-         * The release build, installable next to the dev and prod apps: same R8,
-         * same non-debuggable runtime, signed with the debug key under its own
-         * package so it never replaces either. For measuring startup the way
-         * users get it and for checking that shrinking broke nothing — a debug
-         * build is interpreted and verified at runtime and says little about
-         * either. `./gradlew installDevBenchmark`.
-         */
-        create("benchmark") {
-            initWith(getByName("release"))
-            signingConfig = signingConfigs.getByName("debug")
-            applicationIdSuffix = ".benchmark"
-            matchingFallbacks += listOf("release")
         }
     }
     compileOptions {
@@ -233,6 +162,10 @@ android {
             isReturnDefaultValues = true
         }
     }
+}
+
+tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+    enabled = false
 }
 
 kotlin {
@@ -457,93 +390,4 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
 }
 
-/*
- * A debug APK lands on the device uncompiled — `dumpsys package dexopt` reports
- * it as run-from-apk — so every launch verifies the whole app's classes at
- * runtime before a line of our code runs. Measured on the BlueStacks box, that
- * was about two seconds of every cold start and most of why the dev build felt
- * so much slower than a release one. `verify` is the cheapest filter that
- * removes it (~15s once per install), and unlike `speed` it leaves the debug
- * build debuggable exactly as before.
- *
- * Runs after `installDevDebug` from the command line. Android Studio's Run
- * button deploys on its own and never reaches this task, so from there run
- * `./gradlew verifyDevInstall` after installing.
- */
-val verifyDevInstall = tasks.register("verifyDevInstall") {
-    group = "install"
-    description = "Pre-verifies the installed dev build on every connected device."
-    val adb = androidComponents.sdkComponents.adb
-    doLast {
-        val adbPath = adb.get().asFile.absolutePath
-        val serials = ProcessBuilder(adbPath, "devices").start()
-            .inputStream.bufferedReader().readLines()
-            .drop(1)
-            .mapNotNull { line -> line.split('\t').takeIf { it.size == 2 && it[1] == "device" }?.get(0) }
-        serials.forEach { serial ->
-            logger.lifecycle("verifyDevInstall: compiling com.dev.bitchord on $serial")
-            ProcessBuilder(
-                adbPath, "-s", serial, "shell", "cmd", "package", "compile",
-                "-m", "verify", "-f", "com.dev.bitchord",
-            ).inheritIO().start().waitFor()
-        }
-    }
-}
-tasks.matching { it.name == "installDevDebug" }.configureEach { finalizedBy(verifyDevInstall) }
 
-/*
- * The watch app rides inside the phone app, so "BitChord for Wear OS" in
- * Settings can put it on a watch — or update it — with no computer involved.
- *
- * Each phone variant carries the watch build of the same flavor *and* build
- * type: the same package (dev with dev, prod with prod) and the same signing
- * key, which is what the Wearable Data Layer needs before the two will talk at
- * all. A SHA-256 travels with it, so the phone can tell the watch's build from
- * the one it carries even when the version numbers match.
- *
- * Costs a watch build per phone build; -Pbitchord.bundleWear=false skips it
- * for a quick local iteration (Settings then offers no install).
- */
-abstract class BundleWearApk : DefaultTask() {
-    @get:InputFiles
-    abstract val apks: ConfigurableFileCollection
-
-    @get:OutputDirectory
-    abstract val outputDir: DirectoryProperty
-
-    @TaskAction
-    fun bundle() {
-        val out = outputDir.get().asFile.resolve("wear")
-        out.deleteRecursively()
-        out.mkdirs()
-        val apk = apks.asFileTree.matching { include("*.apk") }.files.singleOrNull()
-            ?: throw GradleException("Expected exactly one watch APK in ${apks.files}")
-        val target = out.resolve("BitChordWear.apk")
-        apk.copyTo(target, overwrite = true)
-        val digest = MessageDigest.getInstance("SHA-256")
-        target.inputStream().use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        out.resolve("BitChordWear.sha256").writeText(digest.digest().joinToString("") { "%02x".format(it) })
-    }
-}
-
-if (providers.gradleProperty("bitchord.bundleWear").orNull != "false" && findProject(":wearos") != null) {
-    androidComponents.onVariants { variant ->
-        val flavor = variant.productFlavors.firstOrNull { it.first == "env" }?.second ?: return@onVariants
-        val type = variant.buildType ?: return@onVariants
-        // The benchmark build has no watch counterpart.
-        if (type != "debug" && type != "release") return@onVariants
-        val cap = variant.name.replaceFirstChar { it.uppercase() }
-        val bundle = tasks.register<BundleWearApk>("bundleWearApk$cap") {
-            dependsOn(":wearos:assemble$cap")
-            apks.from(rootProject.layout.projectDirectory.dir("wearos/build/outputs/apk/$flavor/$type"))
-        }
-        variant.sources.assets?.addGeneratedSourceDirectory(bundle, BundleWearApk::outputDir)
-    }
-}

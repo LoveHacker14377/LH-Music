@@ -60,6 +60,11 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+        <provider android:authorities="androidx.car.app.connection" />
+    </queries>
+
     <application
         android:name=".BitChordApplication"
         android:allowBackup="true"
