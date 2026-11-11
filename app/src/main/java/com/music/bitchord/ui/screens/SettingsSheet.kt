@@ -635,7 +635,7 @@ fun SettingsScreen(
                     title = exportDownloadsTitle,
                     checked = exportDownloads,
                     onCheckedChange = AppSettings::setExportDownloads,
-                    subtitle = "Music/BitChord".takeIf { exportDownloads },
+                    subtitle = "Music/LH Music".takeIf { exportDownloads },
                 )
             }
             val syncPlaylistsTitle = stringResource(R.string.sync_downloaded_playlists)
@@ -1790,7 +1790,7 @@ fun SettingsScreen(
         if (section == null && searchQuery.isBlank()) {
         Text(
             text = buildAnnotatedString {
-                append("bitchord $version  ")
+                append("LH Music $version  ")
                 val linkStyles = TextLinkStyles(
                     style = SpanStyle(
                         color = MaterialTheme.colorScheme.primary,

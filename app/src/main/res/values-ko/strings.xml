@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">BitChord</string>
+    <string name="app_name">LH Music</string>
     <string name="playback_channel_name">지금 재생 중</string>
     <string name="download_channel_name">다운로드</string>
     <string name="download_channel_description">음악 폴더에 저장하는 중인 곡</string>
@@ -142,10 +142,10 @@
     <string name="dolby_atmos_open_failed">Dolby Atmos 설정을 열 수 없습니다</string>
     <string name="update_available">업데이트 가능: v%1$s</string>
     <string name="software_update">소프트웨어 업데이트</string>
-    <string name="update_available_body">bitchord %1$s 버전을 다운로드할 수 있습니다.</string>
-    <string name="update_downloading_body">bitchord %1$s 다운로드 중…</string>
-    <string name="update_ready_body">bitchord %1$s 버전을 설치할 준비가 되었습니다.</string>
-    <string name="update_failed_body">bitchord %1$s 버전을 다운로드할 수 없습니다.</string>
+    <string name="update_available_body">LH Music %1$s 버전을 다운로드할 수 있습니다.</string>
+    <string name="update_downloading_body">LH Music %1$s 다운로드 중…</string>
+    <string name="update_ready_body">LH Music %1$s 버전을 설치할 준비가 되었습니다.</string>
+    <string name="update_failed_body">LH Music %1$s 버전을 다운로드할 수 없습니다.</string>
     <string name="download_now">지금 다운로드</string>
     <string name="install_now">지금 설치</string>
     <string name="later">나중에</string>
@@ -180,7 +180,7 @@
     <string name="widget_previous">이전</string>
     <string name="widget_artwork">앨범 아트</string>
     <string name="widget_nothing_played">아직 재생 안 함</string>
-    <string name="widget_open_bitchord">BitChord 열기</string>
+    <string name="widget_open_bitchord">LH Music 열기</string>
     <string name="widget_preview_title">곡 제목</string>
     <string name="widget_preview_artist">아티스트</string>
     <string name="widget_pill_label">지금 재생 4×1</string>
@@ -302,7 +302,7 @@
     <string name="equalizer_bitstream_footer">이퀄라이저는 디코딩된 음원에만 적용됩니다. 이 곡은 비트스트림 형태로 기기에 곧바로 전달된 뒤에 디코딩되므로, 필터링할 수 있는 샘플이 없습니다.</string>
     <string name="system_equalizer">시스템 이퀄라이저</string>
     <string name="system_equalizer_subtitle">기기 자체 설정</string>
-    <string name="system_equalizer_footer">BitChord 설정 이후, 전체 오디오 세션에 적용됩니다. 두 설정 모두 쓰면 동시에 적용됩니다.</string>
+    <string name="system_equalizer_footer">LH Music 설정 이후, 전체 오디오 세션에 적용됩니다. 두 설정 모두 쓰면 동시에 적용됩니다.</string>
     <string name="eq_preset_flat">플랫</string>
     <string name="eq_preset_acoustic">어쿠스틱</string>
     <string name="eq_preset_bass_boost">베이스 강화</string>
@@ -717,7 +717,7 @@
     <string name="biggest_day_note">%1$s에 %2$s 동안 가장 오래 들었습니다.</string>
     <string name="close_replay">리플레이 닫기</string>
     <string name="couldnt_draw_picture">사진을 생성할 수 없음</string>
-    <string name="default_replay_holder">BitChord 감상자</string>
+    <string name="default_replay_holder">LH Music 감상자</string>
     <string name="different_albums">다른 앨범</string>
     <string name="genres_pending">재생 기록이 쌓이면 장르가 나타납니다</string>
     <string name="hour_am">오전 %1$d시</string>
@@ -744,22 +744,22 @@
     <string name="replay_across"></string>
     <string name="replay_album_end">이 이목을 끌었어요.</string>
     <string name="replay_album_focus">한 앨범</string>
-    <string name="replay_album_start">이번에는, </string>
+    <string name="replay_album_start">이번에는,</string>
     <string name="replay_artist_end">을 꾸준히 들었어요.</string>
     <string name="replay_artist_focus">아티스트 1명</string>
-    <string name="replay_artist_start">한 달 동안, </string>
-    <string name="replay_artist_start_week">이번 주에, </string>
+    <string name="replay_artist_start">한 달 동안,</string>
+    <string name="replay_artist_start_week">이번 주에,</string>
     <string name="replay_empty_description">조금 더 감상하시면 BitChord에서 기록을 리플레이로 만들어 드립니다.</string>
     <string name="replay_genre_end">가 한데 모여, 취향을 다듬었어요.</string>
     <string name="replay_genre_focus">장르</string>
-    <string name="replay_genre_start">내 </string>
-    <string name="replay_habits_middle">과 </string>
-    <string name="replay_habits_start">발견햇어요, </string>
+    <string name="replay_genre_start">내</string>
+    <string name="replay_habits_middle">과</string>
+    <string name="replay_habits_start">발견햇어요,</string>
     <string name="replay_hours_across">%1$s시간</string>
     <string name="replay_intro_end">가 준비되었어요.</string>
-    <string name="replay_intro_start">내 </string>
+    <string name="replay_intro_start">내</string>
     <string name="replay_minutes_end"> 동안 즐겼어요.</string>
-    <string name="replay_minutes_start">음악을 </string>
+    <string name="replay_minutes_start">음악을</string>
     <string name="replay_minutes_value">%1$s</string>
     <plurals name="replay_minutes_unit">
         <item quantity="one">%1$s분</item>
@@ -771,8 +771,8 @@
     <string name="replay_share_summary_description">음악, 아티스트, 앨범, 장르, 습관을 모두 담은 사진입니다.</string>
     <string name="replay_songs_end">과 한 달을 함께 했어요.</string>
     <string name="replay_songs_end_week">과 한 주를 함께 했어요.</string>
-    <string name="replay_songs_start">총 </string>
-    <string name="replay_summary_start">음악으로 표현한 내 </string>
+    <string name="replay_songs_start">총</string>
+    <string name="replay_summary_start">음악으로 표현한 내</string>
     <string name="replay_summary_end_week">한 주</string>
     <string name="saved">저장함</string>
     <string name="saved_bang">저장했습니다!</string>
@@ -994,7 +994,7 @@
     <string name="listen_together_custom_server_dialog_message">이 파티는 외부 서버에서 호스팅합니다.\n\n%1$s\n\n파티 서버를 전환하고 %2$s 파티에 참여하시겠습니까?</string>
     <string name="listen_together_custom_server_switch_and_join">전환 및 참여</string>
     <string name="listen_together_official_server_dialog_title">공식 서버로 전환하시겠습니까?</string>
-    <string name="listen_together_official_server_dialog_message">이 파티는 공식 BitChord 서버에서 호스팅합니다.\n\n공식 서버로 되돌아가고 %1$s 파티에 참여하시겠습니까?</string>
+    <string name="listen_together_official_server_dialog_message">이 파티는 공식 LH Music 서버에서 호스팅합니다.\n\n공식 서버로 되돌아가고 %1$s 파티에 참여하시겠습니까?</string>
     <string name="listen_together_switch_failed_stayed_in_party">파티 참여 불가: %1$s. 파티 %2$s에 남습니다.</string>
     <string name="listen_together_switch_failed">파티 참여 불가: %1$s.</string>
     <string name="listen_together_ping">%1$d ms</string>
@@ -1148,7 +1148,7 @@
     <string name="card_songs_format">음악 %1$s곡</string>
 
     <string name="source_needs_lossless_output">무손실 출력 필요 · 무손실 지원 기기를 사용하세요</string>
-    <string name="source_needs_update">이 애드온은 오래된 버전입니다. 계속 사용할 수 있지만, 최신 BitChord 애드온 문서에 따라 업데이트하도록 개발자에게 요청하세요.</string>
+    <string name="source_needs_update">이 애드온은 오래된 버전입니다. 계속 사용할 수 있지만, 최신 LH Music 애드온 문서에 따라 업데이트하도록 개발자에게 요청하세요.</string>
     <string name="source_outdated">오래된 애드온</string>
     <string name="source_needs_lossless_bt_codec">무손실 출력 필요 · %1$s 코덱 블루투스가 켜졌습니다. 무손실 지원 기기를 사용하세요</string>
     <string name="source_needs_lossless_bt_unknown">무손실 출력 필요 · 어떤 블루투스 코덱을 사용 중인지 알 수 없습니다</string>
@@ -1196,7 +1196,7 @@
     <string name="onboarding_skip_sign_in">로그인 건너뛰기</string>
     <string name="onboarding_back">뒤로</string>
     <!-- Settings: BitChord for Wear OS -->
-    <string name="wear_os_section">Wear OS용 BitChord</string>
+    <string name="wear_os_section">Wear OS용 LH Music</string>
     <string name="wear_os_page_title">Wear OS</string>
     <string name="wear_os_your_watches">내 워치</string>
     <string name="wear_os_value_none">워치 없음</string>
@@ -1223,7 +1223,7 @@
     <string name="wear_os_searching">Wi-Fi에서 워치 찾는 중…</string>
     <string name="wear_os_found">워치 찾음</string>
     <string name="wear_os_pairing">페어링…</string>
-    <string name="wear_os_installing">워치에서 BitChord 설치 중…</string>
+    <string name="wear_os_installing">워치에서 LH Music 설치 중…</string>
     <string name="wear_os_installed">설치됨. 무선 디버깅을 다시 끄셔도 됩니다.</string>
     <string name="wear_os_failed">실패 (%1$s). 코드를 확인하고 다시 시도하세요.</string>
     <string name="wear_os_unsupported">워치에 설치하려면 폰의 Android 버전이 11 이상이어야 합니다.</string>
@@ -1282,8 +1282,8 @@
     <string name="font_footer">이전 글꼴은 앱이 Apple Music에 맞춰지기 전에 쓰던 더 굵고 촘촘한 글꼴을 되돌립니다.</string>
     <string name="bit_perfect_output">비트 퍼펙트 출력</string>
     <string name="bit_perfect_bypassed_footer">비트 퍼펙트 출력이 준비되어 흐리게 표시된 설정은 우회되고 Dolby Atmos 버전은 요청되지 않습니다. DAC를 분리하거나 모드를 끄면 다시 작동합니다.</string>
-    <string name="bit_perfect_sheet_warning">트랙을 변경 없이 DAC로 보냅니다. 이퀄라이저, 체감 음량 평준화, 크로스페이드, 자동 믹스, 재생 속도, BitChord 음량은 우회됩니다.</string>
-    <string name="bit_perfect_mode_off_subtitle">오디오가 Android 믹서와 BitChord 효과를 거칩니다.</string>
+    <string name="bit_perfect_sheet_warning">트랙을 변경 없이 DAC로 보냅니다. 이퀄라이저, 체감 음량 평준화, 크로스페이드, 자동 믹스, 재생 속도, LH Music 음량은 우회됩니다.</string>
+    <string name="bit_perfect_mode_off_subtitle">오디오가 Android 믹서와 LH Music 효과를 거칩니다.</string>
     <string name="bit_perfect_mode_usb_android">USB DAC</string>
     <string name="bit_perfect_mode_usb_android_subtitle">Android 14가 믹싱이나 리샘플링 없이 각 트랙의 샘플레이트와 비트 심도로 DAC를 엽니다.</string>
     <string name="bit_perfect_requires_android_14">Android 14 이상 필요</string>

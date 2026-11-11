@@ -396,7 +396,7 @@ object WatchInstaller {
                 cert = certFile.inputStream().use { CertificateFactory.getInstance("X.509").generateCertificate(it) }
             } else {
                 val pair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
-                val name = X500Name("CN=BitChord")
+                val name = X500Name("CN=LH Music")
                 val now = System.currentTimeMillis()
                 val holder = JcaX509v3CertificateBuilder(
                     name,
@@ -415,6 +415,6 @@ object WatchInstaller {
 
         override fun getPrivateKey(): PrivateKey = key
         override fun getCertificate(): Certificate = cert
-        override fun getDeviceName(): String = "BitChord"
+        override fun getDeviceName(): String = "LH Music"
     }
 }

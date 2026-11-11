@@ -19,32 +19,87 @@ import androidx.compose.ui.unit.sp
 import com.music.bitchord.R
 import com.music.bitchord.data.settings.AppFont
 
-// Apple Music's signature red. No longer the primary accent, but kept for the
-// spots (Replay's rank badge) that want that specific red regardless of theme.
+// Apple Music's signature red. Kept for Replay rank badges and signature highlights.
 val AccentRed = Color(0xFFFA2D48)
 
+// ============================================================================
+// iOS 26 Liquid Glass Accent & Surface Design Tokens
+// ============================================================================
+val ElectricIndigo = Color(0xFF5E5CE6)          // Signature iOS chromatic accent
+val ElectricIndigoDark = Color(0xFF7D7AFF)      // Radiant indigo for dark OLED glass
+val ElectricCyan = Color(0xFF0AC8FF)            // Refractive liquid glass cyan highlight
+val ElectricCyanDark = Color(0xFF38D9FF)        // High-luminance cyan glow
+val LiquidGlassSpecular = Color(0x33FFFFFF)     // 20% specular rim highlight
+val LiquidGlassSpecularDark = Color(0x1AFFFFFF) // 10% dark specular highlight
+val OledBlack = Color(0xFF000000)               // Pure OLED true black
+val IceWhiteSurface = Color(0xFFF6F8FC)         // Crystalline ice-white glass base
+
 private val DarkColors = darkColorScheme(
-    primary = Color.White,
+    primary = ElectricIndigoDark,
     onPrimary = Color.Black,
-    background = Color.Black,
-    onBackground = Color.White,
-    surface = Color(0xFF0D0D0F),
-    onSurface = Color.White,
-    surfaceVariant = Color(0xFF1C1C1E),
-    onSurfaceVariant = Color(0xFF8E8E93),
-    outline = Color(0xFF2C2C2E),
+    primaryContainer = Color(0xFF1E1B4B),
+    onPrimaryContainer = Color(0xFFE0E0FF),
+    secondary = ElectricIndigo,
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFF2E2C6A),
+    onSecondaryContainer = Color(0xFFE0E0FF),
+    tertiary = ElectricCyan,
+    onTertiary = Color.Black,
+    tertiaryContainer = Color(0xFF00384D),
+    onTertiaryContainer = Color(0xFFB5EFFF),
+    background = OledBlack,
+    onBackground = Color(0xFFF5F5F7),
+    surface = Color(0xFF0A0A0F),
+    onSurface = Color(0xFFF5F5F7),
+    surfaceVariant = Color(0xFF14141C),
+    onSurfaceVariant = Color(0xFF9898A6),
+    surfaceContainer = Color(0xFF181822),
+    surfaceContainerHigh = Color(0xFF22222E),
+    surfaceContainerHighest = Color(0xFF2C2C3A),
+    surfaceContainerLow = Color(0xFF121218),
+    surfaceContainerLowest = Color(0xFF06060A),
+    surfaceBright = Color(0xFF383848),
+    surfaceDim = Color(0xFF0A0A0F),
+    outline = Color(0xFF282838),
+    outlineVariant = Color(0xFF1E1E28),
+    scrim = Color(0xCC000000),
+    inverseSurface = IceWhiteSurface,
+    inverseOnSurface = Color(0xFF0A0A0F),
+    inversePrimary = ElectricIndigo,
 )
 
 private val LightColors = lightColorScheme(
-    primary = Color.Black,
+    primary = ElectricIndigo,
     onPrimary = Color.White,
-    background = Color.White,
-    onBackground = Color.Black,
-    surface = Color(0xFFF7F7F9),
-    onSurface = Color.Black,
-    surfaceVariant = Color(0xFFF2F2F7),
-    onSurfaceVariant = Color(0xFF6E6E73),
-    outline = Color(0xFFE5E5EA),
+    primaryContainer = Color(0xFFE5E5FE),
+    onPrimaryContainer = Color(0xFF1A1860),
+    secondary = Color(0xFF4F46E5),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFEEF0FF),
+    onSecondaryContainer = Color(0xFF1E1B4B),
+    tertiary = Color(0xFF0096C7),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFD0F4FF),
+    onTertiaryContainer = Color(0xFF003544),
+    background = Color(0xFFFFFFFF),
+    onBackground = Color(0xFF0A0A0E),
+    surface = IceWhiteSurface,
+    onSurface = Color(0xFF0A0A0E),
+    surfaceVariant = Color(0xFFECEFF5),
+    onSurfaceVariant = Color(0xFF606470),
+    surfaceContainer = Color(0xFFF1F4F9),
+    surfaceContainerHigh = Color(0xFFE8ECF3),
+    surfaceContainerHighest = Color(0xFFDFE4ED),
+    surfaceContainerLow = Color(0xFFF8FAFD),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceBright = Color(0xFFFFFFFF),
+    surfaceDim = Color(0xFFE5E9F0),
+    outline = Color(0xFFD0D6E2),
+    outlineVariant = Color(0xFFE2E6EF),
+    scrim = Color(0x66000000),
+    inverseSurface = Color(0xFF14141C),
+    inverseOnSurface = Color(0xFFF5F5F7),
+    inversePrimary = ElectricIndigoDark,
 )
 
 /**
@@ -153,6 +208,17 @@ fun BitChordTheme(
         content = content,
     )
 }
+
+/**
+ * LH Music primary theme entry point, delivering the iOS 26-inspired Liquid Glass design system.
+ */
+@Composable
+fun LHMusicTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    font: AppFont = AppFont.DEFAULT,
+    content: @Composable () -> Unit,
+) = BitChordTheme(darkTheme = darkTheme, font = font, content = content)
+
 
 /**
  * Draws the status and navigation bar glyphs dark or light.
