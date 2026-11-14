@@ -144,6 +144,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
+import com.music.bitchord.ui.components.DeveloperProfileCard
 import com.music.bitchord.ui.components.PillSegmentedControl
 import com.music.bitchord.ui.components.isGlassSupported
 import com.music.bitchord.ui.components.languageDisplayNameRes
@@ -1779,10 +1780,36 @@ fun SettingsScreen(
             }
         }
 
+        val developerSectionTitle = stringResource(R.string.developer_section_title)
+        val showDeveloperProfile = section == null && search.matches(
+            developerSectionTitle,
+            stringResource(R.string.developer_display_name),
+            stringResource(R.string.developer_real_name),
+            stringResource(R.string.follow_on_instagram),
+            "about",
+        )
+
         // Read after every group above has had its turn at the query, which is
         // what makes this an accurate "nothing here" rather than a guess.
         if (searching && !search.anyMatch) {
             MessageState(stringResource(R.string.settings_search_empty, searchQuery))
+        }
+
+        if (showDeveloperProfile) {
+            Text(
+                text = developerSectionTitle.uppercase(Locale.ROOT),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(
+                    start = GROUP_INSET + 4.dp,
+                    end = GROUP_INSET,
+                    top = 26.dp,
+                    bottom = 8.dp,
+                ),
+            )
+            DeveloperProfileCard(
+                modifier = Modifier.padding(horizontal = GROUP_INSET),
+            )
         }
 
         // The version line is the page's colophon, not a setting: it belongs to

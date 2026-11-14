@@ -260,6 +260,7 @@ import com.music.bitchord.ui.components.GlassNavBar
 import com.music.bitchord.ui.components.floatingtabbar.rememberFloatingTabBarScrollConnection
 import com.music.bitchord.ui.components.FrostedTopBar
 import com.music.bitchord.ui.components.LastfmLoginAlert
+import com.music.bitchord.ui.components.LaunchSplashOverlay
 import com.music.bitchord.ui.components.LocalAppBackdrop
 import com.music.bitchord.ui.components.LocalLiquidGlassEnabled
 import com.music.bitchord.ui.components.backdrop.backdrops.LayerBackdrop
@@ -844,8 +845,16 @@ private fun BitChordApp(
         if (reorderTarget?.browseId != detail?.browseId) reorderTarget = null
     }
 
+    var showLaunchSplash by rememberSaveable { mutableStateOf(true) }
+    LaunchedEffect(showLaunchSplash) {
+        if (showLaunchSplash) {
+            delay(950L)
+            showLaunchSplash = false
+        }
+    }
+
     SystemBarIcons(
-        dark = !darkTheme && !showNowPlaying && route != AppRoute.Replay && replayStory == null && !onboardingVisible && !showDiwali,
+        dark = !darkTheme && !showNowPlaying && route != AppRoute.Replay && replayStory == null && !onboardingVisible && !showDiwali && !showLaunchSplash,
     )
 
     val homeState by viewModel.home.collectAsStateWithLifecycle()
@@ -5427,7 +5436,7 @@ private fun BitChordApp(
         }
 
         // ---- Update available (once per launch; held until the welcome and Diwali greeting are done) ----
-        if (showUpdateDialog && onboardingComplete && !showDiwali) {
+        if (showUpdateDialog && onboardingComplete && !showDiwali && !showLaunchSplash) {
             updateNotice?.let { update ->
                 UpdateAvailableDialog(
                     version = update.version,
@@ -5959,6 +5968,8 @@ private fun BitChordApp(
                 inOwnWindow = playerRaised || songActions != null || browseActions != null,
             )
         }
+
+        LaunchSplashOverlay(visible = showLaunchSplash)
 
     }
 }
