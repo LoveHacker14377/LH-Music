@@ -102,6 +102,7 @@ import com.music.bitchord.R
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.OfflinePlaylists
 import com.music.bitchord.data.innertube.InnertubeParser
+import com.music.bitchord.data.DiscoveryFilter
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.lyrics.EmbeddedLyrics
 import com.music.bitchord.data.lyrics.LyricLine
@@ -1083,11 +1084,22 @@ class PlaybackService : MediaLibraryService() {
                 listenBrainzSong = null
                 listenBrainzStartMs = 0L
                 listenBrainzDurationMs = null
-                // A missed/empty AutoPlay response can let the last queued
-                // track finish before anything is appended. There will be no
-                // item transition to run the ordinary refill path, so give the
-                // still-enabled empty queue another chance here.
-                refreshAutoplayIfQueueEmpty()
+                // If queued items already exist ahead of current index when ending
+                // with repeat off, advance straight to the next song cleanly.
+                if (exoPlayer.repeatMode == Player.REPEAT_MODE_OFF &&
+                    exoPlayer.currentMediaItemIndex >= 0 &&
+                    exoPlayer.currentMediaItemIndex < exoPlayer.mediaItemCount - 1
+                ) {
+                    exoPlayer.seekTo(exoPlayer.currentMediaItemIndex + 1, 0L)
+                    exoPlayer.prepare()
+                    exoPlayer.play()
+                } else {
+                    // A missed/empty AutoPlay response can let the last queued
+                    // track finish before anything is appended. There will be no
+                    // item transition to run the ordinary refill path, so give the
+                    // still-enabled empty queue another chance here.
+                    refreshAutoplayIfQueueEmpty()
+                }
             }
         }
 
@@ -2947,6 +2959,10 @@ class PlaybackService : MediaLibraryService() {
                     ContinuationPage(songs = songs, continuationToken = page.continuation),
                 )
                 if (result.status != ContinuationResultStatus.COMPLETED) return@launch
+                if (page.continuation == null) {
+                    scheduleBoundedContextTopUp()
+                    loadAutoplayForCurrentTrack()
+                }
             }
         }
     }
@@ -3130,8 +3146,13 @@ class PlaybackService : MediaLibraryService() {
     private fun loadAutoplayForCurrentTrack() {
         val exoPlayer = player ?: return
         val party = ListenTogether.state.value
-        if (!autoplayEnabled(party) ||
+        val singleSongAlbumFallback = !party.inParty &&
+            exoPlayer.repeatMode == Player.REPEAT_MODE_OFF &&
+            isSingleSongAlbumExhausted()
+        val autoplayActive = autoplayEnabled(party) || singleSongAlbumFallback
+        if (!autoplayActive ||
             exoPlayer.repeatMode == Player.REPEAT_MODE_ALL ||
+            exoPlayer.repeatMode == Player.REPEAT_MODE_ONE ||
             (party.inParty && autoplaySupplierId(party) != party.you?.memberId)
         ) {
             return
@@ -3162,8 +3183,12 @@ class PlaybackService : MediaLibraryService() {
             while (isActive) {
                 val activePlayer = player ?: return@launch
                 val activeParty = ListenTogether.state.value
-                if (!autoplayEnabled(activeParty) ||
+                val activeSingleFallback = !activeParty.inParty &&
+                    activePlayer.repeatMode == Player.REPEAT_MODE_OFF &&
+                    isSingleSongAlbumExhausted()
+                if (!(autoplayEnabled(activeParty) || activeSingleFallback) ||
                     activePlayer.repeatMode == Player.REPEAT_MODE_ALL ||
+                    activePlayer.repeatMode == Player.REPEAT_MODE_ONE ||
                     activePlayer.currentMediaItem?.mediaId != current.videoId ||
                     (activeParty.inParty && autoplaySupplierId(activeParty) != activeParty.you?.memberId)
                 ) {
@@ -3194,8 +3219,12 @@ class PlaybackService : MediaLibraryService() {
                 }
                 val latestPlayer = player ?: return@launch
                 val latestParty = ListenTogether.state.value
-                if (!autoplayEnabled(latestParty) ||
+                val latestSingleFallback = !latestParty.inParty &&
+                    latestPlayer.repeatMode == Player.REPEAT_MODE_OFF &&
+                    isSingleSongAlbumExhausted()
+                if (!(autoplayEnabled(latestParty) || latestSingleFallback) ||
                     latestPlayer.repeatMode == Player.REPEAT_MODE_ALL ||
+                    latestPlayer.repeatMode == Player.REPEAT_MODE_ONE ||
                     latestPlayer.currentMediaItem?.mediaId != current.videoId ||
                     (latestParty.inParty && autoplaySupplierId(latestParty) != latestParty.you?.memberId)
                 ) {
@@ -3232,7 +3261,17 @@ class PlaybackService : MediaLibraryService() {
                         val fresh = resolved
                             .filterNot { song -> queuedNow.any { QueueBuilder.isSameRecording(it, song) } }
                             .take(room.coerceAtLeast(0))
-                        if (fresh.isNotEmpty()) latestPlayer.addMediaItems(fresh.map { it.toMediaItem() })
+                        if (fresh.isNotEmpty()) {
+                            val wasEnded = latestPlayer.playbackState == Player.STATE_ENDED &&
+                                latestPlayer.repeatMode == Player.REPEAT_MODE_OFF
+                            val nextIndex = latestPlayer.mediaItemCount
+                            latestPlayer.addMediaItems(fresh.map { it.toMediaItem() })
+                            if (wasEnded && nextIndex < latestPlayer.mediaItemCount) {
+                                latestPlayer.seekTo(nextIndex, 0L)
+                                latestPlayer.prepare()
+                                latestPlayer.play()
+                            }
+                        }
                     }
                     if (AppSettings.dontRepeatSuggestions.value) sessionSongHistory += resolved
                     return@launch
@@ -3314,6 +3353,9 @@ class PlaybackService : MediaLibraryService() {
     /** Re-arms AutoPlay when an external queue edit empties or shrinks its tail. */
     private fun refreshAutoplayIfQueueEmpty() {
         val exoPlayer = player ?: return
+        val party = ListenTogether.state.value
+        val enabled = (autoplayEnabled(party) || (!party.inParty && isSingleSongAlbumExhausted())) &&
+            exoPlayer.repeatMode != Player.REPEAT_MODE_ONE
         val aheadNow = (exoPlayer.currentMediaItemIndex + 1 until exoPlayer.mediaItemCount)
             .count { exoPlayer.getMediaItemAt(it).fromAutoplay }
         // Removing some of AutoPlay's tracks leaves a non-empty tail, which the
@@ -3321,13 +3363,13 @@ class PlaybackService : MediaLibraryService() {
         val tailShrank = aheadNow < autoplayAheadSeen
         autoplayAheadSeen = aheadNow
         if (!autoplayQueueNeedsRefresh(
-                enabled = autoplayEnabled(ListenTogether.state.value),
+                enabled = enabled,
                 repeatAll = exoPlayer.repeatMode == Player.REPEAT_MODE_ALL,
                 currentIndex = exoPlayer.currentMediaItemIndex,
                 itemCount = exoPlayer.mediaItemCount,
                 loadInProgress = autoplayLoadJob?.isActive == true,
             ) && !(tailShrank && aheadNow < MAX_QUEUED_AUTOPLAY &&
-                autoplayEnabled(ListenTogether.state.value) &&
+                enabled &&
                 exoPlayer.repeatMode != Player.REPEAT_MODE_ALL &&
                 autoplayLoadJob?.isActive != true)
         ) {
@@ -3336,6 +3378,34 @@ class PlaybackService : MediaLibraryService() {
         autoplayLoadJob = null
         autoplaySeed = null
         loadAutoplayForCurrentTrack()
+    }
+
+    private fun isSingleSongAlbumExhausted(): Boolean {
+        val snapshot = boundedContextRegistry.snapshot()
+        if (snapshot != null && snapshot.contextToken == boundedContextToken) {
+            return snapshot.songs.size == 1 &&
+                (snapshot.continuationState == ContinuationState.EXHAUSTED ||
+                    snapshot.continuationState == ContinuationState.BLOCKED)
+        }
+        val exoPlayer = player ?: return false
+        val currentIndex = exoPlayer.currentMediaItemIndex
+        if (currentIndex < 0 || currentIndex >= exoPlayer.mediaItemCount) return false
+        val currentSong = exoPlayer.currentMediaItem?.toSong() ?: return false
+        val sourceId = currentSong.playbackSourceId
+        if (currentSong.playbackSourceType != PlaybackSourceType.BROWSE ||
+            !DiscoveryFilter.isAlbumBrowseId(sourceId)
+        ) {
+            return false
+        }
+        val hasAheadNonAutoplay = (currentIndex + 1 until exoPlayer.mediaItemCount).any {
+            !exoPlayer.getMediaItemAt(it).fromAutoplay
+        }
+        if (hasAheadNonAutoplay) return false
+        val albumContextTracks = (0 until exoPlayer.mediaItemCount).count { idx ->
+            val item = exoPlayer.getMediaItemAt(idx)
+            item.queueTier == QueueTier.CONTEXT && item.toSong().playbackSourceId == sourceId
+        }
+        return albumContextTracks <= 1
     }
 
     private fun boundedAutoplayEligible(exoPlayer: ExoPlayer): Boolean {

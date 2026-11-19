@@ -440,6 +440,15 @@ object AppSettings {
     /** Whether the one-time Diwali 2026 greeting has been seen and dismissed. */
     val diwaliGreetingShown = MutableStateFlow(false)
 
+    /** Selected Indian music languages (e.g. "hindi", "punjabi") for personalized discovery. */
+    val preferredIndianLanguages = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Selected Indian singers / artists for personalized discovery. */
+    val preferredIndianArtists = MutableStateFlow<Set<String>>(emptySet())
+
+    /** True once the listener has explicitly confirmed or updated Indian music preferences. */
+    val musicPreferencesConfigured = MutableStateFlow(false)
+
     /** Requests a sustained high-refresh UI. Off keeps Android's automatic policy. */
     val highPerformanceMode = MutableStateFlow(false)
 
@@ -1022,6 +1031,14 @@ object AppSettings {
         reduceAnimation.value = prefs.getBoolean(KEY_REDUCE_ANIMATION, false)
         onboardingComplete.value = prefs.getBoolean(KEY_ONBOARDING_COMPLETE, false)
         diwaliGreetingShown.value = prefs.getBoolean(KEY_DIWALI_GREETING_SHOWN, false)
+        preferredIndianLanguages.value = prefs.getStringSet(KEY_PREFERRED_INDIAN_LANGUAGES, emptySet()).orEmpty().toSet()
+        preferredIndianArtists.value = prefs.getStringSet(KEY_PREFERRED_INDIAN_ARTISTS, emptySet()).orEmpty().toSet()
+        musicPreferencesConfigured.value = prefs.getBoolean(KEY_MUSIC_PREFERENCES_CONFIGURED, false)
+        com.music.bitchord.data.IndianMusicPreferences.update(
+            languages = preferredIndianLanguages.value,
+            artists = preferredIndianArtists.value,
+            configured = musicPreferencesConfigured.value,
+        )
         highPerformanceMode.value = prefs.getBoolean(KEY_HIGH_PERFORMANCE_MODE, false)
         performanceRefreshRate.value = normalizePerformanceRefreshRate(
             prefs.getInt(KEY_PERFORMANCE_REFRESH_RATE, DEFAULT_PERFORMANCE_REFRESH_RATE),
@@ -2133,6 +2150,20 @@ object AppSettings {
         return stored.split(",").filter { it.isNotBlank() }
     }
 
+    fun setIndianMusicPreferences(languages: Set<String>, artists: Set<String>) {
+        val normLanguages = languages.map { it.trim().lowercase(java.util.Locale.ROOT) }.filter { it.isNotEmpty() }.toSet()
+        val normArtists = artists.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        preferredIndianLanguages.value = normLanguages
+        preferredIndianArtists.value = normArtists
+        musicPreferencesConfigured.value = true
+        com.music.bitchord.data.IndianMusicPreferences.update(normLanguages, normArtists, configured = true)
+        prefs.edit()
+            .putStringSet(KEY_PREFERRED_INDIAN_LANGUAGES, normLanguages)
+            .putStringSet(KEY_PREFERRED_INDIAN_ARTISTS, normArtists)
+            .putBoolean(KEY_MUSIC_PREFERENCES_CONFIGURED, true)
+            .apply()
+    }
+
     /** Forgets the account: token and cached profile. */
     fun clearDiscordAccount() {
         setDiscordToken("")
@@ -2288,6 +2319,9 @@ object AppSettings {
     private const val KEY_REDUCE_ANIMATION = "reduce_animation"
     private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
     private const val KEY_DIWALI_GREETING_SHOWN = "diwali_greeting_2026_shown"
+    private const val KEY_PREFERRED_INDIAN_LANGUAGES = "preferred_indian_languages"
+    private const val KEY_PREFERRED_INDIAN_ARTISTS = "preferred_indian_artists"
+    private const val KEY_MUSIC_PREFERENCES_CONFIGURED = "music_preferences_configured"
     private const val KEY_HIGH_PERFORMANCE_MODE = "high_performance_mode"
     private const val KEY_PERFORMANCE_REFRESH_RATE = "performance_refresh_rate"
     private const val KEY_STOP_ON_TASK_REMOVED = "stop_on_task_removed"

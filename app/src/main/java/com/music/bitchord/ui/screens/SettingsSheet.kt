@@ -126,6 +126,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
@@ -224,6 +225,7 @@ fun SettingsScreen(
     onOpenSection: (SettingsCategory) -> Unit = {},
     /** Opens a choice with more options than its row can show, as a page. */
     onOpenChoice: (SettingsChoiceKind) -> Unit = {},
+    onMusicPreferences: () -> Unit = {},
 ) {
     val context = LocalContext.current
 
@@ -298,6 +300,8 @@ fun SettingsScreen(
     val hideHomeMoods by AppSettings.hideHomeMoods.collectAsStateWithLifecycle()
     val smartVersionAlignment by AppSettings.smartVersionAlignment.collectAsStateWithLifecycle()
     val filterNonMusicAudio by AppSettings.filterNonMusicAudio.collectAsStateWithLifecycle()
+    val preferredIndianLanguages by AppSettings.preferredIndianLanguages.collectAsStateWithLifecycle()
+    val preferredIndianArtists by AppSettings.preferredIndianArtists.collectAsStateWithLifecycle()
     val localMusicFolderUri by AppSettings.localMusicFolderUri.collectAsStateWithLifecycle()
     val highPerformanceMode by AppSettings.highPerformanceMode.collectAsStateWithLifecycle()
     val performanceRefreshRate by AppSettings.performanceRefreshRate.collectAsStateWithLifecycle()
@@ -910,6 +914,25 @@ fun SettingsScreen(
         }
 
         if (shows(SettingsCategory.CONTENT_PREFERENCES)) SearchableSettingsGroup(search, header = stringResource(R.string.content_preferences)) {
+            val musicPreferencesTitle = stringResource(R.string.music_preferences)
+            row(musicPreferencesTitle, "indian", "language", "singer", "artist", "preferences", "recommendations") {
+                SettingsRow(
+                    icon = SfIcons.Language,
+                    title = musicPreferencesTitle,
+                    subtitle = stringResource(R.string.music_preferences_subtitle),
+                    value = if (preferredIndianLanguages.isEmpty() && preferredIndianArtists.isEmpty()) {
+                        stringResource(R.string.music_preferences_value_empty)
+                    } else {
+                        stringResource(
+                            R.string.music_preferences_value,
+                            preferredIndianLanguages.size,
+                            preferredIndianArtists.size,
+                        )
+                    },
+                    onClick = onMusicPreferences,
+                    modifier = Modifier.testTag("settings_music_preferences_row"),
+                )
+            }
             val preferMusicOnlyTitle = stringResource(R.string.prefer_music_only)
             row(preferMusicOnlyTitle, "video", "audio", "music video", "convert", "song") {
                 SettingsRow(
@@ -2583,9 +2606,10 @@ internal fun SettingsRow(
     iconContent: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .then(if (onClick != null && enabled) Modifier.clickable(onClick = onClick) else Modifier)
             .alpha(if (enabled) 1f else 0.45f)

@@ -11,6 +11,7 @@ import com.music.bitchord.data.model.ArtistPage
 import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.HomeFeed
 import com.music.bitchord.data.model.HomeShelf
+import com.music.bitchord.data.model.ShelfLayout
 import com.music.bitchord.data.model.LibraryPage
 import com.music.bitchord.data.model.LibraryState
 import com.music.bitchord.data.model.LikeStatus
@@ -22,6 +23,7 @@ import com.music.bitchord.data.model.SearchResult
 import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.SongMenu
+import com.music.bitchord.data.model.TopPickMood
 import com.music.bitchord.data.model.UserPlaylist
 import com.music.bitchord.data.model.VersionTimeMap
 import com.music.bitchord.data.model.WatchTarget
@@ -70,6 +72,22 @@ object YtMusicRepository {
      */
     fun versionTimeMap(fromId: String, toId: String): VersionTimeMap? = versionTimeMaps[fromId to toId]
 
+    private val homeCategoryCache = ConcurrentHashMap<String, CachedCategoryItems>()
+    private class CachedCategoryItems(val prefSignature: String, val at: Long, val items: List<ShelfItem>)
+    private const val CATEGORY_CACHE_MS = 180_000L
+
+    private fun preferenceSignature(): String = buildString {
+        append(IndianMusicPreferences.selectedLanguages.sorted().joinToString(","))
+        append('|')
+        append(IndianMusicPreferences.selectedArtists.sorted().joinToString(","))
+    }
+
+    /** Clears cached mood and category discovery shelves after preference updates. */
+    fun invalidateDiscoveryCaches() {
+        moodGenreShelfCache.clear()
+        homeCategoryCache.clear()
+    }
+
     /**
      * The core personalised feed. It stays deliberately independent from the
      * optional shelves below: callers can paint this response immediately,
@@ -82,7 +100,8 @@ object YtMusicRepository {
      */
     suspend fun home(): Result<HomeFeed> = call("home") {
         val home = Innertube.browse("FEmusic_home")
-        HomeFeed(InnertubeParser.parseHome(home), InnertubeParser.continuationToken(home))
+        val enriched = sanitizeAndEnrichHomeShelves(InnertubeParser.parseHome(home))
+        HomeFeed(enriched, InnertubeParser.continuationToken(home))
     }
 
     /** Recently played is rendered independently, at the top of the Play page. */
@@ -90,12 +109,37 @@ object YtMusicRepository {
 
     /** Extra Play shelves are independently fetchable so each can appear as soon as it arrives. */
     suspend fun homeSupplement(browseId: String): Result<List<HomeShelf>> = call("home:$browseId") {
-        shelvesOf(browseId)
+        val raw = shelvesOf(browseId)
+        val enriched = sanitizeAndEnrichHomeShelves(raw)
+        if (browseId != "FEmusic_explore") return@call enriched
+
+        // Ensure core Indian editorial shelves are present even if FEmusic_explore
+        // returned only global/US shelves on this network/account.
+        val existingTitles = enriched.mapTo(HashSet()) { it.title.lowercase(Locale.ROOT) }
+        val extras = coroutineScope {
+            listOf(
+                HomeEditorialCategory.TODAY_HITS to ("Today's biggest hits" to "Top tunes across India"),
+                HomeEditorialCategory.FEATURED_PLAYLISTS to ("Featured playlists" to "Hindi, Indie, Punjabi & South India"),
+            ).filterNot { (_, meta) -> meta.first.lowercase(Locale.ROOT) in existingTitles }
+                .map { (cat, meta) ->
+                    async {
+                        val items = fetchIndianItemsForCategory(cat, preferPlaylists = cat == HomeEditorialCategory.FEATURED_PLAYLISTS, preferAlbums = false, preferArtists = false)
+                        if (items.isEmpty()) null else HomeShelf(
+                            title = meta.first,
+                            items = DiscoveryRanker.rankShelfItems(items, limit = 14),
+                            subtitle = meta.second,
+                            layout = ShelfLayout.CARDS,
+                        )
+                    }
+                }.awaitAll().filterNotNull()
+        }
+        enriched + extras
     }
 
     val HOME_SUPPLEMENT_BROWSE_IDS = listOf(
         "FEmusic_new_releases",
         "FEmusic_explore",
+        "FEmusic_charts",
     )
 
     /**
@@ -106,10 +150,263 @@ object YtMusicRepository {
      */
     suspend fun moreHome(token: String): Result<HomeFeed> = call("home:more") {
         val response = Innertube.browseContinuation(token)
+        val enriched = sanitizeAndEnrichHomeShelves(InnertubeParser.parseHomeContinuation(response))
         HomeFeed(
-            shelves = InnertubeParser.parseHomeContinuation(response),
+            shelves = enriched,
             continuation = InnertubeParser.continuationToken(response),
         )
+    }
+
+    private fun isMoodShelfTitle(title: String): Boolean {
+        val lower = title.lowercase(Locale.ROOT)
+        return "mood" in lower || "vibe" in lower || "feeling" in lower
+    }
+
+    private fun isPersonalUserShelf(title: String): Boolean {
+        val lower = title.trim().lowercase(Locale.ROOT)
+        return lower == "recents" ||
+            lower == "recently played" ||
+            lower == "from your library" ||
+            lower == "mixed for you" ||
+            lower == "listen again" ||
+            lower == "forgotten favorites" ||
+            lower.startsWith("similar to")
+    }
+
+    private enum class HomeEditorialCategory {
+        TODAY_HITS,
+        FEATURED_PLAYLISTS,
+        ALL_TIME_ESSENTIALS,
+        THROWBACKS,
+        NEW_ALBUMS_SINGLES,
+        TRENDING,
+        CHARTS,
+        MINDFUL_INSTRUMENTALS,
+    }
+
+    private fun classifyHomeEditorialCategory(title: String): HomeEditorialCategory? {
+        val lower = title.trim().lowercase(Locale.ROOT)
+        return when {
+            "all-time essential" in lower || "all time essential" in lower || "essentials" in lower ->
+                HomeEditorialCategory.ALL_TIME_ESSENTIALS
+            "featured playlist" in lower || "community playlist" in lower || "curated playlist" in lower ->
+                HomeEditorialCategory.FEATURED_PLAYLISTS
+            "today's biggest hit" in lower || "hits today" in lower || "today's hit" in lower ->
+                HomeEditorialCategory.TODAY_HITS
+            "throwback" in lower || "golden classic" in lower || "rewind" in lower ->
+                HomeEditorialCategory.THROWBACKS
+            "new album" in lower || "albums & single" in lower || "new release" in lower ->
+                HomeEditorialCategory.NEW_ALBUMS_SINGLES
+            "mindful" in lower || "instrumental" in lower || "meditation" in lower ->
+                HomeEditorialCategory.MINDFUL_INSTRUMENTALS
+            "trending" in lower || "artists on the rise" in lower ->
+                HomeEditorialCategory.TRENDING
+            "chart" in lower || "top songs" in lower || "top artists" in lower ->
+                HomeEditorialCategory.CHARTS
+            else -> null
+        }
+    }
+
+    /**
+     * Filters unwanted global/US/Christian/Country/Spanish/Chinese content out
+     * of Home shelves, replenishes depleted or non-Indian editorial shelves via
+     * real Innertube India queries, and applies dynamic preference-aware ranking
+     * with per-artist and multi-industry diversity preservation.
+     */
+    private suspend fun sanitizeAndEnrichHomeShelves(rawShelves: List<HomeShelf>): List<HomeShelf> = coroutineScope {
+        val deferred = rawShelves.map { shelf ->
+            async {
+                val lowerTitle = shelf.title.trim().lowercase(Locale.ROOT)
+                // Strictly preserve user's chronological history / library / personalized mixes
+                if (lowerTitle == "recents" || lowerTitle == "recently played" ||
+                    lowerTitle == "from your library" || lowerTitle == "mixed for you"
+                ) {
+                    return@async shelf
+                }
+                if (lowerTitle == "listen again" || lowerTitle == "forgotten favorites" || lowerTitle.startsWith("similar to")) {
+                    return@async DiscoveryFilter.sanitizeShelf(shelf, stripAlbums = false, stripChinese = true)
+                }
+
+                // Drop entire unwanted regional/genre shelves (e.g. Country, Christian, Latin, Chinese)
+                if (DiscoveryFilter.isUnwantedDefaultDiscoveryText(shelf.title, shelf.subtitle)) {
+                    return@async null
+                }
+
+                val isMood = isMoodShelfTitle(shelf.title)
+                val keptItems = shelf.items.filter { item ->
+                    val okText = !DiscoveryFilter.isUnwantedDefaultDiscoveryText(item.title, item.subtitle)
+                    val okAlbum = !isMood || !DiscoveryFilter.isAlbumItem(item)
+                    okText && okAlbum
+                }
+
+                // Keep video shelves intact as video shelves after filtering unwanted items
+                if (shelf.layout == ShelfLayout.VIDEO) {
+                    if (keptItems.isEmpty()) return@async null
+                    val rankedVideos = DiscoveryRanker.rankShelfItems(keptItems, limit = keptItems.size)
+                    return@async shelf.copy(items = rankedVideos)
+                }
+
+                val category = classifyHomeEditorialCategory(shelf.title)
+                val droppedCount = shelf.items.size - keptItems.size
+                val indianCount = keptItems.count { DiscoveryFilter.hasIndianSignal(it.title, it.subtitle) }
+                val lowIndianRatio = keptItems.isNotEmpty() && indianCount * 3 < keptItems.size
+                val needsReplenishment = keptItems.size < 5 ||
+                    (droppedCount >= 2 && indianCount < 3) ||
+                    lowIndianRatio
+
+                val finalItems = if (category != null && needsReplenishment) {
+                    val preferAlbums = shelf.items.count { DiscoveryFilter.isAlbumItem(it) } * 2 >= shelf.items.size.coerceAtLeast(1)
+                    val preferArtists = shelf.items.count { it.browseId?.startsWith("UC") == true } * 2 >= shelf.items.size.coerceAtLeast(1)
+                    val preferPlaylists = !preferAlbums && !preferArtists &&
+                        shelf.items.count { it.browseId?.startsWith("VL") == true } * 2 >= shelf.items.size.coerceAtLeast(1)
+                    val indianItems = fetchIndianItemsForCategory(
+                        category = category,
+                        preferPlaylists = preferPlaylists,
+                        preferAlbums = preferAlbums,
+                        preferArtists = preferArtists,
+                    )
+                    val existingIndian = keptItems.filter { DiscoveryFilter.hasIndianSignal(it.title, it.subtitle) }
+                    val combined = (existingIndian + indianItems)
+                        .distinctBy { it.videoId ?: it.browseId ?: "${it.title}:${it.subtitle}" }
+                    if (combined.isNotEmpty()) {
+                        DiscoveryRanker.rankShelfItems(combined, limit = maxOf(14, shelf.items.size))
+                    } else {
+                        DiscoveryRanker.rankShelfItems(keptItems, limit = keptItems.size)
+                    }
+                } else {
+                    if (keptItems.isEmpty()) return@async null
+                    DiscoveryRanker.rankShelfItems(keptItems, limit = keptItems.size)
+                }
+
+                if (finalItems.isEmpty()) null
+                else shelf.copy(
+                    items = finalItems,
+                    layout = if (shelf.layout == ShelfLayout.LIST) ShelfLayout.LIST else com.music.bitchord.data.model.shelfLayoutFor(shelf.title, finalItems, fromList = false),
+                )
+            }
+        }
+        deferred.awaitAll().filterNotNull()
+    }
+
+    private suspend fun fetchIndianItemsForCategory(
+        category: HomeEditorialCategory,
+        preferPlaylists: Boolean,
+        preferAlbums: Boolean,
+        preferArtists: Boolean,
+    ): List<ShelfItem> {
+        val prefSig = preferenceSignature()
+        val mode = when {
+            preferArtists -> "artists"
+            preferAlbums -> "albums"
+            preferPlaylists -> "playlists"
+            else -> "songs"
+        }
+        val cacheKey = "${category.name}:$mode"
+        val now = System.currentTimeMillis()
+        homeCategoryCache[cacheKey]?.takeIf {
+            it.prefSignature == prefSig && (now - it.at) < CATEGORY_CACHE_MS
+        }?.let { return it.items }
+
+        val selectedLang = IndianMusicPreferences.languageLabels().firstOrNull() ?: "Hindi"
+        val altLang = IndianMusicPreferences.complementaryLanguagesFor(limit = 2)
+            .joinToString(" ") { it.label }
+            .ifBlank { "Punjabi Tamil" }
+        val selectedArtist = IndianMusicPreferences.selectedArtists.firstOrNull()
+
+        val queries: List<Pair<String, SearchFilter>> = when (category) {
+            HomeEditorialCategory.ALL_TIME_ESSENTIALS -> listOf(
+                "$selectedLang evergreen classic essentials" to if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS,
+                "bollywood all time essentials classics" to if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS,
+                "indian classics ilaiyaraaja rahman kishore lata" to SearchFilter.SONGS,
+            )
+            HomeEditorialCategory.FEATURED_PLAYLISTS -> listOf(
+                "$selectedLang top hits playlist" to SearchFilter.PLAYLISTS,
+                "indian indie unplugged hits playlist" to SearchFilter.PLAYLISTS,
+                "$altLang hits playlist" to SearchFilter.PLAYLISTS,
+            )
+            HomeEditorialCategory.TODAY_HITS -> {
+                val filter = if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS
+                listOfNotNull(
+                    "today's biggest hits india $selectedLang" to filter,
+                    selectedArtist?.let { "$it latest hit songs" to SearchFilter.SONGS },
+                    "top indian hits punjabi tamil indie" to filter,
+                )
+            }
+            HomeEditorialCategory.THROWBACKS -> listOf(
+                "$selectedLang 90s 2000s throwback hits" to if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS,
+                "bollywood retro 2000s throwback" to if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS,
+                "punjabi tamil 2000s throwback hits" to SearchFilter.SONGS,
+            )
+            HomeEditorialCategory.NEW_ALBUMS_SINGLES -> listOfNotNull(
+                "new $selectedLang album 2025 2026" to SearchFilter.ALBUMS,
+                selectedArtist?.let { "$it latest album single" to SearchFilter.ALBUMS },
+                "new indian punjabi tamil telugu album" to SearchFilter.ALBUMS,
+            )
+            HomeEditorialCategory.TRENDING -> {
+                val filter = if (preferArtists) SearchFilter.ARTISTS else SearchFilter.SONGS
+                listOf(
+                    "trending indian songs $selectedLang" to filter,
+                    "viral indian indie punjabi hits" to filter,
+                    "trending tamil telugu marathi songs" to filter,
+                )
+            }
+            HomeEditorialCategory.CHARTS -> when {
+                preferArtists -> listOf(
+                    "top indian singers $selectedLang punjabi tamil" to SearchFilter.ARTISTS,
+                    "popular indian indie artists" to SearchFilter.ARTISTS,
+                )
+                preferPlaylists -> listOf(
+                    "india top charts playlist" to SearchFilter.PLAYLISTS,
+                    "$selectedLang top 50 charts playlist" to SearchFilter.PLAYLISTS,
+                )
+                else -> listOf(
+                    "top songs india chart $selectedLang" to SearchFilter.SONGS,
+                    "india charts punjabi tamil telugu marathi" to SearchFilter.SONGS,
+                )
+            }
+            HomeEditorialCategory.MINDFUL_INSTRUMENTALS -> listOf(
+                "indian classical instrumental flute sitar peaceful" to if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS,
+                "hindi lofi acoustic peaceful instrumental" to if (preferPlaylists) SearchFilter.PLAYLISTS else SearchFilter.SONGS,
+                "carnatic hindustani meditation instrumental" to SearchFilter.SONGS,
+            )
+        }
+
+        val fetched = coroutineScope {
+            queries.map { (q, filter) ->
+                async {
+                    runCatching {
+                        val rows = InnertubeParser.parseSearchPage(
+                            Innertube.search(q, filter.params, anonymous = true),
+                            includeVideos = false,
+                        ).rows
+                        rows.mapNotNull { row ->
+                            when (row) {
+                                is SearchResult.TopTrack -> row.song.takeUnless { it.isVideo }?.let { song ->
+                                    ShelfItem(song.title, song.artist, song.thumbnailUrl, song.videoId, null)
+                                }
+                                is SearchResult.Track -> row.song.takeUnless { it.isVideo }?.let { song ->
+                                    ShelfItem(song.title, song.artist, song.thumbnailUrl, song.videoId, null)
+                                }
+                                is SearchResult.Browse -> ShelfItem(
+                                    title = row.item.title,
+                                    subtitle = row.item.subtitle,
+                                    thumbnailUrl = row.item.thumbnailUrl,
+                                    videoId = null,
+                                    browseId = row.item.browseId,
+                                )
+                            }
+                        }
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten()
+        }
+            .filterNot { DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.title, it.subtitle) }
+            .distinctBy { it.videoId ?: it.browseId ?: "${it.title}:${it.subtitle}" }
+
+        if (fetched.isNotEmpty()) {
+            homeCategoryCache[cacheKey] = CachedCategoryItems(prefSig, now, fetched)
+        }
+        return fetched
     }
 
     /**
@@ -209,8 +506,12 @@ object YtMusicRepository {
         val homeRaw = runCatching { Innertube.browse("FEmusic_home") }.getOrNull()
         val shelves = if (homeRaw != null) InnertubeParser.parseHome(homeRaw) else emptyList()
 
+        val sanitizedShelves = shelves.mapNotNull { shelf ->
+            DiscoveryFilter.sanitizeShelf(shelf, stripAlbums = false, stripChinese = true)
+        }
+
         // 1. Direct "Quick picks" or "Mix" or "Recommendations" shelf
-        val qpShelf = shelves.firstOrNull {
+        val qpShelf = sanitizedShelves.firstOrNull {
             it.title.contains("quick", ignoreCase = true) ||
                 it.title.contains("pick", ignoreCase = true) ||
                 it.title.contains("mix", ignoreCase = true) ||
@@ -225,17 +526,17 @@ object YtMusicRepository {
                     thumbnailUrl = item.thumbnailUrl,
                 )
             }
-        }.orEmpty()
-        if (qpSongs.isNotEmpty()) return@call qpSongs
+        }?.filterNot(DiscoveryFilter::isUnwantedDiscoverySong).orEmpty()
+        if (qpSongs.isNotEmpty()) return@call DiscoveryRanker.rankSongs(qpSongs, limit = 20)
 
         // 2. All shelves on Home (excluding shelves mentioning recent/history, and skipping top shelf if multiple exist)
-        val candidateShelves = if (shelves.size > 1) {
-            shelves.drop(1).filterNot {
+        val candidateShelves = if (sanitizedShelves.size > 1) {
+            sanitizedShelves.drop(1).filterNot {
                 it.title.contains("recent", ignoreCase = true) ||
                     it.title.contains("history", ignoreCase = true) ||
                     it.title.contains("listen again", ignoreCase = true)
             }
-        } else shelves
+        } else sanitizedShelves
 
         val homeShelfSongs = candidateShelves.flatMap { shelf ->
             shelf.items.mapNotNull { item ->
@@ -248,12 +549,12 @@ object YtMusicRepository {
                     )
                 }
             }
-        }.distinctBy { it.videoId }
+        }.filterNot(DiscoveryFilter::isUnwantedDiscoverySong).distinctBy { it.videoId }
 
-        if (homeShelfSongs.isNotEmpty()) return@call homeShelfSongs
+        if (homeShelfSongs.isNotEmpty()) return@call DiscoveryRanker.rankSongs(homeShelfSongs, limit = 20)
 
         // 3. Any shelf items on Home that have videoId
-        val allHomeTrackSongs = shelves.flatMap { shelf ->
+        val allHomeTrackSongs = sanitizedShelves.flatMap { shelf ->
             shelf.items.mapNotNull { item ->
                 item.videoId?.let { vid ->
                     Song(
@@ -264,13 +565,14 @@ object YtMusicRepository {
                     )
                 }
             }
-        }.distinctBy { it.videoId }
+        }.filterNot(DiscoveryFilter::isUnwantedDiscoverySong).distinctBy { it.videoId }
 
         val uniqueAllHome = allHomeTrackSongs.filterNot { it.videoId in excludeSongIds }
-        if (uniqueAllHome.isNotEmpty()) return@call uniqueAllHome
+        if (uniqueAllHome.isNotEmpty()) return@call DiscoveryRanker.rankSongs(uniqueAllHome, limit = 20)
 
-        // 4. Explore / New releases
+        // 4. Explore / New releases (filtered & diversity-ranked)
         val explore = runCatching { shelvesOf("FEmusic_new_releases") }.getOrDefault(emptyList())
+            .mapNotNull { DiscoveryFilter.sanitizeShelf(it, stripAlbums = false, stripChinese = true) }
         val exploreSongs = explore.flatMap { shelf ->
             shelf.items.mapNotNull { item ->
                 item.videoId?.takeUnless { it in excludeSongIds }?.let { vid ->
@@ -282,12 +584,15 @@ object YtMusicRepository {
                     )
                 }
             }
-        }.distinctBy { it.videoId }
+        }.filterNot(DiscoveryFilter::isUnwantedDiscoverySong).distinctBy { it.videoId }
 
-        if (exploreSongs.isNotEmpty()) return@call exploreSongs
+        if (exploreSongs.isNotEmpty()) return@call DiscoveryRanker.rankSongs(exploreSongs, limit = 20)
 
-        // 5. Fallback if everything was filtered out
-        allHomeTrackSongs.ifEmpty { exploreSongs }
+        // 5. Indian discovery query fallback
+        val indianSongs = indianRecommendationFallback(null, excludeSongIds, limit = 20)
+        if (indianSongs.isNotEmpty()) return@call DiscoveryRanker.rankSongs(indianSongs, limit = 20)
+
+        DiscoveryRanker.rankSongs(allHomeTrackSongs, limit = 20)
     }
 
     private const val HISTORY = "FEmusic_history"
@@ -301,19 +606,75 @@ object YtMusicRepository {
 
     /** The server-defined mood and genre categories used by Explore. */
     suspend fun moodAndGenres(): Result<List<MoodGenreSection>> = call("moods-and-genres") {
-        InnertubeParser.parseMoodAndGenres(Innertube.browse("FEmusic_moods_and_genres"))
+        DiscoveryFilter.sanitizeMoodGenreSections(
+            InnertubeParser.parseMoodAndGenres(Innertube.browse("FEmusic_moods_and_genres")),
+        )
     }
 
     /**
      * The playlist shelves behind one mood/genre category. This result also
      * supplies its tile artwork, so caching it avoids a second request when a
      * user taps a category whose cover has already appeared.
+     *
+     * Album cards and unwanted non-Indian default shelves/items are stripped so
+     * Find Your Mood surfaces clean Indian mood playlists ranked by listener taste
+     * without becoming single-artist or single-language restricted.
      */
     suspend fun moodGenreShelves(browseId: String, params: String?): Result<List<HomeShelf>> {
-        val key = "$browseId:${params.orEmpty()}"
+        val prefSig = preferenceSignature()
+        val key = "$browseId:${params.orEmpty()}:$prefSig"
         moodGenreShelfCache[key]?.let { return Result.success(it) }
         return call("mood-genre:$browseId") {
-            InnertubeParser.parseHome(Innertube.browse(browseId, params))
+            val sanitized = InnertubeParser.parseHome(Innertube.browse(browseId, params)).mapNotNull { shelf ->
+                val cleaned = DiscoveryFilter.sanitizeShelf(shelf, stripAlbums = true, stripChinese = true)
+                    ?: return@mapNotNull null
+                val ranked = DiscoveryRanker.rankShelfItems(cleaned.items, limit = cleaned.items.size)
+                if (ranked.isEmpty()) null else cleaned.copy(items = ranked)
+            }
+            if (sanitized.isNotEmpty()) {
+                return@call sanitized
+            }
+            // If all shelves for this mood were stripped due to non-Indian default pollution,
+            // fall back cleanly to real Indian mood playlists via Innertube search.
+            val mood = TopPickMood.entries.firstOrNull { it.params == params }
+            val moodLabel = mood?.name?.lowercase(Locale.ROOT)?.replace('_', ' ') ?: "bollywood"
+            val selectedLang = IndianMusicPreferences.languageLabels().firstOrNull() ?: "Hindi"
+            val playlistItems = coroutineScope {
+                listOf(
+                    "indian $moodLabel $selectedLang playlist",
+                    "bollywood $moodLabel playlists",
+                ).map { query ->
+                    async {
+                        runCatching {
+                            InnertubeParser.parseSearchPage(
+                                Innertube.search(query, SearchFilter.PLAYLISTS.params, anonymous = true),
+                                includeVideos = false,
+                            ).rows.filterIsInstance<SearchResult.Browse>()
+                                .map { row ->
+                                    ShelfItem(
+                                        title = row.item.title,
+                                        subtitle = row.item.subtitle,
+                                        thumbnailUrl = row.item.thumbnailUrl,
+                                        videoId = null,
+                                        browseId = row.item.browseId,
+                                    )
+                                }
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll().flatten()
+            }
+                .filterNot { DiscoveryFilter.isAlbumItem(it) || DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.title, it.subtitle) }
+                .distinctBy { it.browseId ?: it.title }
+            val rankedFallback = DiscoveryRanker.rankShelfItems(playlistItems, limit = 12)
+            if (rankedFallback.isEmpty()) emptyList()
+            else listOf(
+                HomeShelf(
+                    title = "Indian ${moodLabel.replaceFirstChar { it.titlecase(Locale.ROOT) }}",
+                    items = rankedFallback,
+                    subtitle = "Curated Indian Playlists",
+                    layout = ShelfLayout.CARDS,
+                ),
+            )
         }.also { result -> result.getOrNull()?.let { moodGenreShelfCache.putIfAbsent(key, it) } }
     }
 
@@ -1202,7 +1563,349 @@ object YtMusicRepository {
     suspend fun mixedForYou(): Result<List<ShelfItem>> = call("mixedForYou") {
         if (Innertube.cookie == null) return@call emptyList()
         InnertubeParser.parseTwoRowItemsDeep(Innertube.browse("FEmusic_mixed_for_you"))
+            .filterNot { DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.title, it.subtitle) }
     }
+
+    // ---- Personalized Indian New Music & Infinite Discovery ----------------
+
+    data class IndianDiscoveryStage(
+        val title: String,
+        val subtitle: String,
+        val query: String,
+        val extraQueries: List<String> = emptyList(),
+        val continuationToken: String? = null,
+        val initialFetched: Boolean = false,
+        val continuationDepth: Int = 0,
+    )
+
+    data class IndianDiscoveryCursor(
+        val stages: List<IndianDiscoveryStage>,
+        val stageIndex: Int = 0,
+    ) {
+        val hasMore: Boolean get() = stageIndex < stages.size
+    }
+
+    data class IndianDiscoveryPage(
+        val shelves: List<HomeShelf>,
+        val nextCursor: IndianDiscoveryCursor,
+        val deliveredSongIds: Set<String>,
+    )
+
+    fun buildIndianDiscoveryCursor(
+        languages: Set<String> = IndianMusicPreferences.selectedLanguages,
+        artists: Set<String> = IndianMusicPreferences.selectedArtists,
+    ): IndianDiscoveryCursor {
+        val stages = mutableListOf<IndianDiscoveryStage>()
+        val cleanArtists = artists.map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { it.lowercase(Locale.ROOT) }
+        val normLanguages = languages.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.distinct()
+        val langLabels = IndianMusicPreferences.languageLabels(normLanguages.toSet()).distinctBy { it.lowercase(Locale.ROOT) }
+        val peerArtists = IndianMusicPreferences.peerArtistsFor(normLanguages.toSet(), exclude = cleanArtists.toSet(), limit = 4)
+        val complementaryLangs = IndianMusicPreferences.complementaryLanguagesFor(normLanguages.toSet(), limit = 4)
+
+        // Stage 0 (visible on initial Home load): always a genuinely blended, multi-artist & multi-language
+        // Indian discovery shelf boosted by selected artist(s) & language(s), never mono-artist.
+        val leadLang = langLabels.firstOrNull() ?: "Hindi"
+        val leadExtras = buildList {
+            cleanArtists.take(2).forEach { artist ->
+                add("$artist latest new song")
+            }
+            if (langLabels.size > 1) {
+                add("latest ${langLabels[1]} songs new releases")
+            }
+            val peerPair = peerArtists.take(2).joinToString(" ")
+            if (peerPair.isNotBlank()) {
+                add("$peerPair $leadLang new songs")
+            }
+            val compTerm = complementaryLangs.take(2).joinToString(" ") { it.label }.ifBlank { "Punjabi Tamil" }
+            add("latest $compTerm indian indie new songs")
+        }.distinct()
+
+        val leadSubtitle = when {
+            langLabels.isNotEmpty() && cleanArtists.isNotEmpty() ->
+                "${langLabels.take(2).joinToString(", ")} · ${cleanArtists.take(2).joinToString(", ")} & Diverse Indian Voices"
+            langLabels.isNotEmpty() ->
+                "${langLabels.take(2).joinToString(", ")} & Pan-Indian Mix"
+            cleanArtists.isNotEmpty() ->
+                "${cleanArtists.take(2).joinToString(", ")} & Indian Artists"
+            else -> "Bollywood, Indie, Punjabi, South & Regional Hits"
+        }
+
+        stages += IndianDiscoveryStage(
+            title = "Fresh Indian Mix for You",
+            subtitle = leadSubtitle,
+            query = "latest $leadLang songs new releases",
+            extraQueries = leadExtras,
+        )
+
+        // Personalized artist + peer spotlight stages (never an isolated 1-artist silo).
+        cleanArtists.take(3).forEach { artist ->
+            val artistLangs = IndianMusicPreferences.ARTIST_LANGUAGE_MAP[artist.lowercase(Locale.ROOT)] ?: normLanguages.toSet()
+            val peers = IndianMusicPreferences.peerArtistsFor(artistLangs, exclude = setOf(artist), limit = 3)
+            val peerQuery = peers.take(2).joinToString(" ").ifBlank { leadLang }
+            stages += IndianDiscoveryStage(
+                title = "$artist & Similar Indian Voices",
+                subtitle = "Recent releases & related artists",
+                query = "$artist latest songs",
+                extraQueries = listOf(
+                    "$peerQuery latest indian songs",
+                    "trending $leadLang indian songs",
+                ),
+            )
+        }
+
+        // Personalized language stages paired with emerging & indie artists in each language.
+        langLabels.forEach { language ->
+            stages += IndianDiscoveryStage(
+                title = "New $language & Indie Hits",
+                subtitle = "Popular & emerging $language artists",
+                query = "latest $language songs new releases",
+                extraQueries = listOf(
+                    "$language indie independent artists songs",
+                ),
+            )
+        }
+
+        val baseline = listOf(
+            IndianDiscoveryStage(
+                title = "India Trending & Viral Hits",
+                subtitle = "Top moving tracks across India",
+                query = "trending indian songs viral hits",
+                extraQueries = listOf("top indian hits bollywood punjabi tamil"),
+            ),
+            IndianDiscoveryStage(
+                title = "Indian Indie & Emerging Voices",
+                subtitle = "Independent, Acoustic & New Wave",
+                query = "indian indie new releases anuv jain prateek kuhad aditya rikhari",
+                extraQueries = listOf("indian independent emerging artists songs"),
+            ),
+            IndianDiscoveryStage(
+                title = "Punjabi & Haryanvi Fresh Hits",
+                subtitle = "Punjabi Pop, Hip-Hop & Haryanvi",
+                query = "latest punjabi songs diljit karan aujla ap dhillon",
+                extraQueries = listOf("latest haryanvi punjabi hit songs"),
+            ),
+            IndianDiscoveryStage(
+                title = "Tamil & Telugu New Releases",
+                subtitle = "Kollywood & Tollywood latest hits",
+                query = "latest tamil songs anirudh rahman",
+                extraQueries = listOf("latest telugu songs tollywood new hits"),
+            ),
+            IndianDiscoveryStage(
+                title = "Malayalam, Kannada & Marathi Gems",
+                subtitle = "Mollywood, Sandalwood & Marathi scenes",
+                query = "latest malayalam songs mollywood hits",
+                extraQueries = listOf("latest kannada marathi songs new releases"),
+            ),
+            IndianDiscoveryStage(
+                title = "Bengali, Gujarati & Regional India",
+                subtitle = "Bangla, Gujarati, Bhojpuri & Odia",
+                query = "latest bengali songs bangla hits",
+                extraQueries = listOf("latest gujarati bhojpuri odia songs"),
+            ),
+            IndianDiscoveryStage(
+                title = "All-Time Indian Essentials",
+                subtitle = "Evergreen classics across eras",
+                query = "evergreen bollywood classics kishore kumar lata mangeshkar",
+                extraQueries = listOf("all time indian classic songs rahman ilaiyaraaja"),
+            ),
+            IndianDiscoveryStage(
+                title = "Indian Throwbacks: 90s & 2000s",
+                subtitle = "Nostalgic favorites & golden hits",
+                query = "90s 2000s bollywood throwback hit songs",
+                extraQueries = listOf("2000s hindi punjabi tamil throwback songs"),
+            ),
+            IndianDiscoveryStage(
+                title = "Mindful Indian Instrumentals",
+                subtitle = "Flute, Sitar, Classical & Lofi India",
+                query = "indian classical flute sitar peaceful instrumental",
+                extraQueries = listOf("hindi lofi acoustic peaceful instrumental"),
+            ),
+        )
+        baseline.forEach { candidate ->
+            if (stages.none { it.title.equals(candidate.title, ignoreCase = true) }) {
+                stages += candidate
+            }
+        }
+        return IndianDiscoveryCursor(stages = stages, stageIndex = 0)
+    }
+
+    /**
+     * Fetches exactly ONE paginated discovery step per scroll trigger from real
+     * YouTube Music search/continuation results, applying dynamic preference boosts
+     * and diversity-preserving re-ranking while deduplicating strictly against [seenSongIds].
+     */
+    suspend fun nextIndianDiscoveryPage(
+        cursor: IndianDiscoveryCursor,
+        seenSongIds: Set<String>,
+    ): Result<IndianDiscoveryPage> = call("indianDiscovery:${cursor.stageIndex}") {
+        if (!cursor.hasMore) {
+            return@call IndianDiscoveryPage(emptyList(), cursor, emptySet())
+        }
+        val mutableStages = cursor.stages.toMutableList()
+        var index = cursor.stageIndex
+        val delivered = LinkedHashSet<String>()
+        val shelves = mutableListOf<HomeShelf>()
+        var attempts = 0
+
+        // Bounded walk: advance at most 3 empty/exhausted stages in one scroll fetch so
+        // pagination remains responsive and never hammers the API.
+        while (index < mutableStages.size && shelves.isEmpty() && attempts < 3) {
+            attempts++
+            val stage = mutableStages[index]
+            var nextContinuation: String? = null
+            val rawSongs: List<Song> = if (!stage.initialFetched) {
+                val allQueries = (listOf(stage.query) + stage.extraQueries)
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+                val pages = coroutineScope {
+                    allQueries.map { q ->
+                        async {
+                            runCatching {
+                                InnertubeParser.parseSearchPage(
+                                    Innertube.search(q, SearchFilter.SONGS.params, anonymous = true),
+                                    includeVideos = false,
+                                )
+                            }.getOrNull()
+                        }
+                    }.awaitAll().filterNotNull()
+                }
+                nextContinuation = pages.firstOrNull { !it.continuation.isNullOrBlank() }?.continuation
+                pages.flatMap { page ->
+                    page.rows.mapNotNull { row ->
+                        when (row) {
+                            is SearchResult.TopTrack -> row.song
+                            is SearchResult.Track -> row.song
+                            is SearchResult.Browse -> null
+                        }
+                    }
+                }
+            } else {
+                val token = stage.continuationToken
+                if (token.isNullOrBlank()) {
+                    index++
+                    continue
+                }
+                val page = InnertubeParser.parseSearchPage(
+                    Innertube.searchContinuation(token),
+                    includeVideos = false,
+                )
+                nextContinuation = page.continuation
+                page.rows.mapNotNull { row ->
+                    when (row) {
+                        is SearchResult.TopTrack -> row.song
+                        is SearchResult.Track -> row.song
+                        is SearchResult.Browse -> null
+                    }
+                }
+            }
+                .filterNot { it.isVideo }
+                .filterNot(DiscoveryFilter::isUnwantedDiscoverySong)
+                .filterNot { it.videoId in seenSongIds || it.videoId in delivered }
+                .distinctBy { it.videoId }
+
+            val rankedSongs = DiscoveryRanker.rankSongs(
+                songs = rawSongs,
+                limit = DISCOVERY_SHELF_ITEM_LIMIT,
+            )
+
+            val canContinueStage = !nextContinuation.isNullOrBlank() &&
+                stage.continuationDepth < MAX_DISCOVERY_CONTINUATION_PER_STAGE &&
+                rankedSongs.isNotEmpty()
+            if (canContinueStage) {
+                mutableStages[index] = stage.copy(
+                    continuationToken = nextContinuation,
+                    initialFetched = true,
+                    continuationDepth = stage.continuationDepth + 1,
+                )
+            } else {
+                index++
+            }
+
+            if (rankedSongs.isNotEmpty()) {
+                delivered += rankedSongs.map { it.videoId }
+                val shelfTitle = if (stage.continuationDepth > 0) {
+                    "${stage.title} · More"
+                } else {
+                    stage.title
+                }
+                shelves += HomeShelf(
+                    title = shelfTitle,
+                    subtitle = stage.subtitle,
+                    layout = if (stage.continuationDepth == 0) ShelfLayout.CARDS else ShelfLayout.LIST,
+                    items = rankedSongs.map { song ->
+                        ShelfItem(
+                            title = song.title,
+                            subtitle = song.albumName?.takeIf { it.isNotBlank() }?.let { "${song.artist} · $it" } ?: song.artist,
+                            thumbnailUrl = song.thumbnailUrl,
+                            videoId = song.videoId,
+                            browseId = null,
+                        )
+                    },
+                )
+            }
+        }
+
+        IndianDiscoveryPage(
+            shelves = shelves,
+            nextCursor = IndianDiscoveryCursor(stages = mutableStages, stageIndex = index),
+            deliveredSongIds = delivered,
+        )
+    }
+
+    /**
+     * Real YouTube Music recommendation fallback anchored on Indian music preferences
+     * and recent songs. Used when a 1-song album or AutoPlay radio yields no next song.
+     */
+    suspend fun indianRecommendationFallback(
+        seedSong: Song?,
+        excludeIds: Set<String>,
+        limit: Int = 10,
+    ): List<Song> {
+        val queries = buildIndianFallbackQueries(seedSong)
+        val collected = LinkedHashMap<String, Song>()
+        for (query in queries) {
+            if (collected.size >= limit * 2) break
+            val rows = search(query, SearchFilter.SONGS).getOrNull().orEmpty()
+            val songs = rows.mapNotNull { row ->
+                when (row) {
+                    is SearchResult.TopTrack -> row.song
+                    is SearchResult.Track -> row.song
+                    is SearchResult.Browse -> null
+                }
+            }
+                .filterNot { it.isVideo }
+                .filterNot(DiscoveryFilter::isUnwantedDiscoverySong)
+                .filterNot { it.videoId in excludeIds || it.videoId in collected }
+            songs.forEach { song -> collected[song.videoId] = song }
+        }
+        return DiscoveryRanker.rankSongs(collected.values.toList(), limit = limit)
+    }
+
+    private fun buildIndianFallbackQueries(seedSong: Song?): List<String> = buildList {
+        val seedArtist = seedSong?.artist
+            ?.split(',', '&', '•', '·')
+            ?.firstOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && !DiscoveryFilter.isUnwantedDefaultDiscoveryText(it) }
+        if (seedArtist != null) {
+            add("$seedArtist latest songs")
+        }
+        IndianMusicPreferences.selectedArtists.shuffled().take(1).forEach { artist ->
+            add("$artist new songs")
+        }
+        IndianMusicPreferences.peerArtistsFor(limit = 2).shuffled().take(1).forEach { peer ->
+            add("$peer latest indian songs")
+        }
+        IndianMusicPreferences.languageLabels().shuffled().take(2).forEach { lang ->
+            add("latest $lang songs")
+        }
+        add("trending indian songs bollywood indie punjabi tamil")
+        add("new indian hits songs")
+    }.distinct()
+
+    private const val DISCOVERY_SHELF_ITEM_LIMIT = 15
+    private const val MAX_DISCOVERY_CONTINUATION_PER_STAGE = 1
 
     /**
      * Listening history for a caller that can live with it being a minute or

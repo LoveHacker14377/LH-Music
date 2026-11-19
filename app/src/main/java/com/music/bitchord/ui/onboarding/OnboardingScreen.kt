@@ -37,10 +37,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -61,6 +63,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -74,6 +77,7 @@ import com.music.bitchord.sharedui.resources.Res
 import com.music.bitchord.sharedui.resources.ic_google_g
 import com.music.bitchord.sharedui.resources.ic_logo
 import org.jetbrains.compose.resources.painterResource
+import com.music.bitchord.ui.components.MusicPreferencesSelector
 import com.music.bitchord.ui.icons.BitChordIcons
 import com.music.bitchord.ui.player.MeshGradientBackground
 import com.music.bitchord.ui.player.MESH_CYCLE_MILLIS
@@ -82,32 +86,33 @@ import com.music.bitchord.ui.player.WelcomeMeshPalettes
 import com.music.bitchord.ui.player.cyclingMeshPalette
 
 /**
- * The two welcome pages: a name for Listen Together, then the YouTube sign-in.
- *
- * Shown once — to new installs and, because the flag it sets is new, to anyone
- * updating from a build without it. The second page is skipped for an account
- * that is already signed in; asking somebody to connect what is connected
- * reads as the app having forgotten them.
- *
- * Always drawn dark, whatever the theme, for the same reason Replay is: the
- * mesh is colour, and white type is what sits on colour.
+ * Welcome flow: Listen Together nickname, Indian music preferences (languages &
+ * favorite singers), and optional YouTube Music sign-in.
  */
 @Composable
 fun OnboardingScreen(
     signedIn: Boolean,
     initialName: String,
-    /** Saves the party name. Called on Next, before the second page. */
+    /** Saves the party name. Called on Next, before preferences. */
     onNameChosen: (String) -> Unit,
     /** Opens the Google sign-in. The caller finishes onboarding once it lands. */
     onSignIn: () -> Unit,
     onFinish: () -> Unit,
     modifier: Modifier = Modifier,
+    initialLanguages: Set<String> = emptySet(),
+    initialArtists: Set<String> = emptySet(),
+    onSearchArtists: suspend (String) -> List<String> = { emptyList() },
+    onPreferencesChosen: (Set<String>, Set<String>) -> Unit = { _, _ -> },
 ) {
     var page by rememberSaveable { mutableIntStateOf(PAGE_NAME) }
     var name by rememberSaveable { mutableStateOf(initialName) }
+    var selectedLanguages by rememberSaveable { mutableStateOf(initialLanguages.toList()) }
+    var selectedArtists by rememberSaveable { mutableStateOf(initialArtists.toList()) }
     val focusManager = LocalFocusManager.current
 
-    BackHandler(enabled = page == PAGE_CONNECT) { page = PAGE_NAME }
+    BackHandler(enabled = page > PAGE_NAME) {
+        page = if (page == PAGE_CONNECT) PAGE_PREFERENCES else PAGE_NAME
+    }
     // "Sign in with Google" goes through the app's own sign-in WebView, raised
     // over this page; the account landing is what ends the welcome.
     LaunchedEffect(signedIn, page) {
@@ -116,7 +121,7 @@ fun OnboardingScreen(
 
     // The mesh never settles on one palette: each crossfade is as long as the
     // hold, so one runs straight into the next.
-    val palette = cyclingMeshPalette(if (page == PAGE_NAME) WelcomeMeshPalettes else ConnectPalettes)
+    val palette = cyclingMeshPalette(if (page == PAGE_CONNECT) ConnectPalettes else WelcomeMeshPalettes)
 
     Box(
         modifier
@@ -174,11 +179,36 @@ fun OnboardingScreen(
                             if (chosen.isEmpty()) return@next
                             focusManager.clearFocus()
                             onNameChosen(chosen)
+                            page = PAGE_PREFERENCES
+                        },
+                    )
+                    PAGE_PREFERENCES -> PreferencesPage(
+                        selectedLanguages = selectedLanguages.toSet(),
+                        selectedArtists = selectedArtists.toSet(),
+                        onToggleLanguage = { langId ->
+                            val current = selectedLanguages.toMutableList()
+                            if (langId in current) current.remove(langId) else current.add(langId)
+                            selectedLanguages = current
+                        },
+                        onToggleArtist = { artist ->
+                            val current = selectedArtists.toMutableList()
+                            val existing = current.firstOrNull { it.equals(artist, ignoreCase = true) }
+                            if (existing != null) current.remove(existing) else current.add(artist)
+                            selectedArtists = current
+                        },
+                        onSearchArtists = onSearchArtists,
+                        onBack = {
+                            focusManager.clearFocus()
+                            page = PAGE_NAME
+                        },
+                        onContinue = {
+                            focusManager.clearFocus()
+                            onPreferencesChosen(selectedLanguages.toSet(), selectedArtists.toSet())
                             if (signedIn) onFinish() else page = PAGE_CONNECT
                         },
                     )
                     else -> ConnectPage(
-                        onBack = { page = PAGE_NAME },
+                        onBack = { page = PAGE_PREFERENCES },
                         onSignIn = onSignIn,
                         onSkip = onFinish,
                     )
@@ -253,6 +283,57 @@ private fun ColumnScope.NamePage(
         onClick = onNext,
         enabled = name.isNotBlank(),
         primary = true,
+    )
+    Spacer(Modifier.height(16.dp))
+}
+
+@Composable
+private fun ColumnScope.PreferencesPage(
+    selectedLanguages: Set<String>,
+    selectedArtists: Set<String>,
+    onToggleLanguage: (String) -> Unit,
+    onToggleArtist: (String) -> Unit,
+    onSearchArtists: suspend (String) -> List<String>,
+    onBack: () -> Unit,
+    onContinue: () -> Unit,
+) {
+    Spacer(Modifier.height(16.dp))
+    BackButton(onBack)
+    Spacer(Modifier.height(18.dp))
+    Title(stringResource(R.string.onboarding_preferences_title))
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = stringResource(R.string.onboarding_preferences_subtitle),
+        style = MaterialTheme.typography.bodyMedium,
+        fontSize = 15.sp,
+        lineHeight = 20.sp,
+        color = Color.White.copy(alpha = 0.74f),
+    )
+    Spacer(Modifier.height(16.dp))
+
+    Column(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState()),
+    ) {
+        MusicPreferencesSelector(
+            selectedLanguages = selectedLanguages,
+            selectedArtists = selectedArtists,
+            onToggleLanguage = onToggleLanguage,
+            onToggleArtist = onToggleArtist,
+            onSearchArtists = onSearchArtists,
+            darkSurface = true,
+        )
+        Spacer(Modifier.height(16.dp))
+    }
+
+    Spacer(Modifier.height(14.dp))
+    PillButton(
+        label = stringResource(R.string.onboarding_continue),
+        onClick = onContinue,
+        primary = true,
+        modifier = Modifier.testTag("onboarding_continue_button"),
     )
     Spacer(Modifier.height(16.dp))
 }
@@ -369,6 +450,7 @@ private fun PillButton(
     label: String,
     onClick: () -> Unit,
     primary: Boolean,
+    modifier: Modifier = Modifier,
     enabled: Boolean = true,
     leading: (@Composable () -> Unit)? = null,
 ) {
@@ -377,7 +459,7 @@ private fun PillButton(
     val scale by animateFloatAsState(if (pressed) 0.97f else 1f, spring(stiffness = 900f), label = "pillScale")
     val alpha by animateFloatAsState(if (enabled) 1f else 0.4f, tween(180), label = "pillAlpha")
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .height(56.dp)
             .graphicsLayer {
@@ -434,7 +516,8 @@ private fun BackButton(onClick: () -> Unit) {
 }
 
 private const val PAGE_NAME = 0
-private const val PAGE_CONNECT = 1
+private const val PAGE_PREFERENCES = 1
+private const val PAGE_CONNECT = 2
 
 /** Long enough for a full name; the party server keeps the first 80. */
 private const val NAME_LIMIT = 40

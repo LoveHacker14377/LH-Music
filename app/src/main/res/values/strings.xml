@@ -1339,4 +1339,19 @@
     <string name="follow_on_instagram">Follow on Instagram</string>
     <string name="developer_photo_cd">Developer profile photo of Love Hacker</string>
     <string name="splash_developer_branding">Love Hacker</string>
+    <string name="onboarding_preferences_title">Pick your Indian music vibe</string>
+    <string name="onboarding_preferences_subtitle">Choose languages and singers you love so your Home feed starts with songs you actually want to hear.</string>
+    <string name="onboarding_continue">Continue</string>
+    <string name="preferences_languages_label">Preferred languages</string>
+    <string name="preferences_artists_label">Favorite Indian singers</string>
+    <string name="preferences_artist_search_hint">Search Indian singers or artists…</string>
+    <string name="preferences_artist_searching">Searching artists…</string>
+    <string name="preferences_selected_count">%1$d selected</string>
+    <string name="music_preferences">Music preferences</string>
+    <string name="music_preferences_subtitle">Indian languages and favorite singers for recommendations</string>
+    <string name="music_preferences_value_empty">Not set</string>
+    <string name="music_preferences_value">%1$d languages · %2$d singers</string>
+    <string name="music_preferences_save">Save preferences</string>
+    <string name="music_preferences_clear">Clear selection</string>
+    <string name="home_load_more_error">Could not load more recommendations. Tap to retry.</string>
 </resources>

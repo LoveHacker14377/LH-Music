@@ -1,6 +1,10 @@
 import java.util.Properties
 import java.security.MessageDigest
+import java.io.ByteArrayOutputStream
 import java.io.FileInputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 plugins {
     id("com.android.application")
@@ -208,6 +212,80 @@ val newPipeExtractorStripped = tasks.register<org.gradle.api.tasks.bundling.Jar>
     }
 }
 
+/*
+ * Media3 Session 1.11.0's AndroidAutoConnectionStateObserver queries
+ * content://androidx.car.app.connection without checking resolveContentProvider first,
+ * causing E/ActivityThread: Failed to find provider info for androidx.car.app.connection
+ * on devices without Android Auto. app/src/main/java carries a guarded replacement in
+ * androidx/media3/session/AndroidAutoConnectionStateObserver.java; strip upstream's copy
+ * from media3-session's classes.jar so D8 sees a single definition in all build types.
+ */
+abstract class StripMedia3SessionCarObserverTask : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val inputAar: ConfigurableFileCollection
+
+    @get:OutputFile
+    abstract val outputAar: RegularFileProperty
+
+    @TaskAction
+    fun strip() {
+        val srcAar = inputAar.singleFile
+        val dstAar = outputAar.get().asFile
+        dstAar.parentFile.mkdirs()
+
+        ZipInputStream(srcAar.inputStream().buffered()).use { zis ->
+            ZipOutputStream(dstAar.outputStream().buffered()).use { zos ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val outEntry = ZipEntry(entry.name)
+                    zos.putNextEntry(outEntry)
+                    if (entry.name == "classes.jar") {
+                        val jarIn = ZipInputStream(zis)
+                        val baos = ByteArrayOutputStream()
+                        ZipOutputStream(baos).use { jarOut ->
+                            var classEntry = jarIn.nextEntry
+                            while (classEntry != null) {
+                                val className = classEntry.name
+                                val isTargetObserver =
+                                    className == "androidx/media3/session/AndroidAutoConnectionStateObserver.class" ||
+                                        className.startsWith("androidx/media3/session/AndroidAutoConnectionStateObserver\$")
+                                if (!isTargetObserver) {
+                                    jarOut.putNextEntry(ZipEntry(className))
+                                    jarIn.copyTo(jarOut)
+                                    jarOut.closeEntry()
+                                }
+                                jarIn.closeEntry()
+                                classEntry = jarIn.nextEntry
+                            }
+                        }
+                        zos.write(baos.toByteArray())
+                    } else if (!entry.isDirectory) {
+                        zis.copyTo(zos)
+                    }
+                    zos.closeEntry()
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+        }
+    }
+}
+
+val media3SessionRaw: Configuration by configurations.creating {
+    isTransitive = false
+    isCanBeConsumed = false
+}
+dependencies {
+    media3SessionRaw("androidx.media3:media3-session:1.11.0")
+}
+val media3SessionStripped = tasks.register<StripMedia3SessionCarObserverTask>(
+    "stripMedia3SessionCarObserver"
+) {
+    inputAar.from(media3SessionRaw)
+    outputAar.set(layout.buildDirectory.file("stripped-libs/media3-session-1.11.0-nocarobserver.aar"))
+}
+
 dependencies {
     implementation(project(":shared"))
     implementation(project(":sharedUi"))
@@ -241,9 +319,16 @@ dependencies {
 
     // ---- Media playback: Media3 / ExoPlayer ----
     implementation("androidx.media3:media3-exoplayer:1.11.0")
-    implementation("androidx.media3:media3-session:1.11.0")
+    // Consumed as a stripped AAR rather than the raw module so upstream
+    // AndroidAutoConnectionStateObserver does not reach dexing alongside our patched copy.
+    // Transitive dependencies from media3-session-1.11.0.module are declared explicitly below.
+    implementation(files(media3SessionStripped))
     implementation("androidx.media3:media3-common:1.11.0")
+    implementation("androidx.media3:media3-datasource:1.11.0")
     implementation("androidx.media3:media3-datasource-okhttp:1.11.0")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+    implementation("androidx.concurrent:concurrent-futures:1.2.0")
+    implementation("androidx.media:media:1.7.0")
     // Audio is progressive, but Apple serves its motion artwork as HLS — this
     // is what lets the animated sleeve play it. See CanvasArtworkPlayer.
     implementation("androidx.media3:media3-exoplayer-hls:1.11.0")

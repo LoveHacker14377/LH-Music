@@ -66,6 +66,12 @@ object LocaleTags {
     }
 
     /**
+     * Geo used for default music discovery (Home, Explore, Moods, radio).
+     * Focused on Indian songs and artists regardless of OS language.
+     */
+    fun ytDiscoveryGl(): String = "IN"
+
+    /**
      * The `gl` a search is ranked for, or null to send none.
      *
      * Not [ytGl]: that is a guess from the language alone, so every listener

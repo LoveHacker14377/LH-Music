@@ -1,5 +1,6 @@
 package com.music.bitchord.playback
 
+import com.music.bitchord.data.DiscoveryFilter
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.model.SearchFilter
@@ -101,13 +102,38 @@ suspend fun loadAutoplayTracks(
     seedSong: Song,
     limit: Int = MAX_QUEUED_AUTOPLAY,
 ): Result<List<Song>> {
-    val seed = youtubeSeedFor(seedSong) ?: return Result.success(emptyList())
+    val seed = youtubeSeedFor(seedSong)
     // A music video plays on with music videos, as YouTube Music does — unless
     // they would only be converted again, when the station's songs are the answer.
     val videos = seedSong.isVideo && seed == seedSong.videoId && !MusicOnlyPlayback.isActive()
-    val related = YtMusicRepository.radio(seed, preferVideo = videos).getOrElse { return Result.failure(it) }
-    val extra = QueueBuilder.extend(existing, related, limit, preferVideos = videos)
-    if (extra.isEmpty()) return Result.success(emptyList())
+    val seedIsChinese = DiscoveryFilter.isUnwantedDiscoverySong(seedSong)
+
+    var radioFailure: Throwable? = null
+    val related = if (seed != null) {
+        YtMusicRepository.radio(seed, preferVideo = videos)
+            .onFailure { radioFailure = it }
+            .getOrDefault(emptyList())
+            .let { list ->
+                if (seedIsChinese) list else list.filterNot(DiscoveryFilter::isUnwantedDiscoverySong)
+            }
+    } else {
+        emptyList()
+    }
+
+    var extra = QueueBuilder.extend(existing, related, limit, preferVideos = videos)
+    if (extra.isEmpty()) {
+        val excludeIds = existing.mapTo(HashSet()) { it.videoId }
+        val indianFallback = YtMusicRepository.indianRecommendationFallback(
+            seedSong = seedSong,
+            excludeIds = excludeIds,
+            limit = limit,
+        )
+        extra = QueueBuilder.extend(existing, indianFallback, limit, preferVideos = false)
+    }
+
+    if (extra.isEmpty()) {
+        return radioFailure?.let { Result.failure(it) } ?: Result.success(emptyList())
+    }
 
     return Result.success(extra.map {
         it.copy(

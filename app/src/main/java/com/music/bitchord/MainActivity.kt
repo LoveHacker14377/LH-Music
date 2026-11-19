@@ -169,6 +169,7 @@ import com.music.bitchord.ui.navigation.AppDestination
 import com.music.bitchord.ui.navigation.AppRoute
 import com.music.bitchord.ui.screens.EqualizerPresetPage
 import com.music.bitchord.ui.screens.SettingsChoicePage
+import com.music.bitchord.ui.components.MusicPreferencesSheet
 import com.music.bitchord.ui.components.SpotifyImportAlert
 import com.music.bitchord.ui.screens.WearOsScreen
 import com.music.bitchord.ui.screens.AccountAndScrobblingScreen
@@ -664,6 +665,7 @@ private fun BitChordApp(
     var showLyricsSources by remember { mutableStateOf(false) }
     var showAppLanguage by remember { mutableStateOf(false) }
     var showTranslationLanguage by remember { mutableStateOf(false) }
+    var showMusicPreferences by remember { mutableStateOf(false) }
     var showAccountSelector by remember { mutableStateOf(false) }
     var showListenBrainzLogin by remember { mutableStateOf(false) }
     var showLastfmLogin by remember { mutableStateOf(false) }
@@ -875,6 +877,9 @@ private fun BitChordApp(
         }
     }
     val homeLoadingMore by viewModel.homeLoadingMore.collectAsStateWithLifecycle()
+    val homeLoadMoreError by viewModel.homeLoadMoreError.collectAsStateWithLifecycle()
+    val preferredIndianLanguages by AppSettings.preferredIndianLanguages.collectAsStateWithLifecycle()
+    val preferredIndianArtists by AppSettings.preferredIndianArtists.collectAsStateWithLifecycle()
     val homeRecentlyPlayedLoading by viewModel.homeRecentlyPlayedLoading.collectAsStateWithLifecycle()
     val topPicks by viewModel.topPicks.collectAsStateWithLifecycle()
     val topPicksLoading by viewModel.topPicksLoading.collectAsStateWithLifecycle()
@@ -3148,6 +3153,7 @@ private fun BitChordApp(
                                 onEditSignatureApi = { editingSignatureApi = true },
                                 onConfirmBitPerfect = { confirmBitPerfect = it },
                                 onConfirmFixedVolume = { confirmFixedVolume = true },
+                                onMusicPreferences = { showMusicPreferences = true },
                                 contentPadding = listPadding,
                             )
                         } else if (page != null) {
@@ -3422,6 +3428,8 @@ private fun BitChordApp(
                                 contentPadding = listPadding,
                                 onLoadMore = viewModel::loadMoreHome,
                                 loadingMore = homeLoadingMore,
+                                loadMoreError = homeLoadMoreError,
+                                onRetryLoadMore = viewModel::retryLoadMoreHome,
                                 recentlyPlayedLoading = homeRecentlyPlayedLoading && !hideRecents,
                                 topPicks = topPicks,
                                 topPicksLoading = topPicksLoading,
@@ -5326,6 +5334,13 @@ private fun BitChordApp(
                 onNameChosen = ListenTogether::setNickname,
                 onSignIn = { webSession = WebSessionMode.SIGN_IN },
                 onFinish = AppSettings::setOnboardingComplete,
+                initialLanguages = preferredIndianLanguages,
+                initialArtists = preferredIndianArtists,
+                onSearchArtists = viewModel::searchIndianArtists,
+                onPreferencesChosen = { langs, artists ->
+                    AppSettings.setIndianMusicPreferences(langs, artists)
+                    viewModel.refreshDiscoveryForPreferences()
+                },
             )
         }
 
@@ -5566,6 +5581,19 @@ private fun BitChordApp(
             TranslationLanguageDialog(
                 hazeState = hazeState,
                 onDismiss = { showTranslationLanguage = false },
+            )
+        }
+
+        if (showMusicPreferences) {
+            MusicPreferencesSheet(
+                initialLanguages = preferredIndianLanguages,
+                initialArtists = preferredIndianArtists,
+                onSearchArtists = viewModel::searchIndianArtists,
+                onSave = { langs, artists ->
+                    AppSettings.setIndianMusicPreferences(langs, artists)
+                    viewModel.refreshDiscoveryForPreferences()
+                },
+                onDismiss = { showMusicPreferences = false },
             )
         }
 

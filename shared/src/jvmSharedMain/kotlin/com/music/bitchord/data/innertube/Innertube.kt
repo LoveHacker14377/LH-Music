@@ -76,9 +76,9 @@ object Innertube {
         get() = com.music.bitchord.data.LocaleTags.ytHl(currentLocaleTag)
 
     val currentRegion: String
-        get() = com.music.bitchord.data.LocaleTags.ytGl(currentLocaleTag)
+        get() = com.music.bitchord.data.LocaleTags.ytDiscoveryGl()
 
-    /** [currentRegion] for search, where null lets YouTube place us — see [LocaleTags.ytSearchGl]. */
+    /** Region for manual search, kept unrestricted so international and Chinese queries work cleanly. */
     private val searchRegion: String?
         get() = com.music.bitchord.data.LocaleTags.ytSearchGl(currentLocaleTag)
 

@@ -76,14 +76,20 @@ object TopPicks {
         val historyAsync = async { YtMusicRepository.recentHistory().getOrNull().orEmpty() }
         val mixesAsync = async { findMixes(homeShelves) }
 
-        val history = historyAsync.await()
-        val ranked = weightedSample(rankArtists(history, local.artists).take(ARTIST_POOL), ARTISTS)
+        val history = historyAsync.await().filterNot(DiscoveryFilter::isUnwantedDiscoverySong)
+        val prefArtists = resolvePreferredArtists(history, local.artists)
+        val rankedHistory = rankArtists(history, local.artists)
+        val candidateArtists = blendPreferredAndHistoryArtists(prefArtists, rankedHistory)
+            .filterNot { DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.name) }
+            .distinctBy { it.browseId ?: normalizedArtistName(it.name) }
+        val ranked = weightedSample(candidateArtists.take(ARTIST_POOL), ARTISTS)
         val pages = ranked.map { artist ->
             async { YtMusicRepository.artistLanding(artist.browseId!!).getOrNull() }
         }.awaitAll()
         val artists = ranked.zip(pages).mapNotNull { (ref, page) ->
             page?.let { ArtistCard(it.copy(name = it.name ?: ref.name), ref.browseId!!) }
         }
+            .filterNot { DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.name) }
             // One person can be two channels (an artist's own and a "Topic"
             // one, or a spelling of their name); two of them would be the
             // same face on two cards.
@@ -95,8 +101,8 @@ object TopPicks {
         val mixes = mixesAsync.await()
         Log.d(TAG, "topPicks: history=${history.size} artists=${artists.map { it.name }} mixes=${mixes.keys}")
 
-        // The first card is always the new release when there is one, as on
-        // Apple Music; the rest come in a different order every build.
+        // Filter album recommendations in Top Picks strictly away from Chinese items and
+        // respect Indian preferences; rest come in a fresh randomized order.
         val lead = latestRelease(artists)
         val rest = buildList {
             personalStation(mixes, history, local)?.let(::add)
@@ -118,6 +124,70 @@ object TopPicks {
             discoveryStation(mixes, artists, history)?.let(::add)
         }.shuffled()
         listOfNotNull(lead) + rest
+    }
+
+    private fun blendPreferredAndHistoryArtists(
+        preferred: List<ArtistRef>,
+        historyRanked: List<ArtistRef>,
+    ): List<ArtistRef> {
+        if (preferred.isEmpty()) return historyRanked
+        if (historyRanked.isEmpty()) return preferred
+        val selectedNames = IndianMusicPreferences.selectedArtists.mapTo(HashSet()) { normalizedArtistName(it) }
+        val explicitSelected = preferred.filter { normalizedArtistName(it.name) in selectedNames }
+        val peerAndComplementary = preferred.filterNot { normalizedArtistName(it.name) in selectedNames }
+        // Boost user-selected artists near the front while keeping history & diverse Indian peers interleaved.
+        return buildList {
+            explicitSelected.firstOrNull()?.let(::add)
+            historyRanked.take(2).forEach(::add)
+            explicitSelected.drop(1).forEach(::add)
+            peerAndComplementary.forEach(::add)
+            historyRanked.drop(2).forEach(::add)
+        }
+    }
+
+    private suspend fun resolvePreferredArtists(
+        history: List<Song>,
+        localArtists: List<ArtistRef>,
+    ): List<ArtistRef> = coroutineScope {
+        val existingCount = rankArtists(history, localArtists).size
+        val selected = IndianMusicPreferences.selectedArtists
+            .filterNot { DiscoveryFilter.isUnwantedDefaultDiscoveryText(it) }
+        val peers = IndianMusicPreferences.peerArtistsFor(
+            languages = IndianMusicPreferences.selectedLanguages,
+            exclude = selected.toSet(),
+            limit = 2,
+        )
+        val complementaryLangIds = IndianMusicPreferences.complementaryLanguagesFor(
+            selected = IndianMusicPreferences.selectedLanguages,
+            limit = 3,
+        ).mapTo(HashSet()) { it.id }
+        val crossIndustryPeers = IndianMusicPreferences.peerArtistsFor(
+            languages = complementaryLangIds,
+            exclude = (selected + peers).toSet(),
+            limit = 2,
+        )
+
+        val chosen = when {
+            selected.isNotEmpty() -> (selected.take(2) + peers.shuffled().take(2) + crossIndustryPeers.shuffled().take(1))
+                .distinctBy { it.lowercase(Locale.ROOT) }
+            IndianMusicPreferences.selectedLanguages.isNotEmpty() ->
+                (peers.shuffled().take(3) + crossIndustryPeers.shuffled().take(2))
+                    .distinctBy { it.lowercase(Locale.ROOT) }
+            existingCount == 0 -> IndianMusicPreferences.SUGGESTED_ARTISTS
+                .distinctBy { it.languages.firstOrNull() ?: it.name }
+                .shuffled()
+                .take(4)
+                .map { it.name }
+            else -> emptyList()
+        }
+
+        chosen.take(5).map { name ->
+            async {
+                YtMusicRepository.findArtistPageId(name).getOrNull()?.let { id ->
+                    ArtistRef(name = name, browseId = id)
+                }
+            }
+        }.awaitAll().filterNotNull()
     }
 
     /**
@@ -262,7 +332,12 @@ object TopPicks {
             // The release shelves are the ones of albums (MPRE… pages). Each is
             // newest first, so only its lead card is a candidate.
             artist.page.sections
-                .mapNotNull { shelf -> shelf.items.firstOrNull()?.takeIf { it.browseId?.startsWith("MPRE") == true } }
+                .mapNotNull { shelf ->
+                    shelf.items.firstOrNull()?.takeIf {
+                        it.browseId?.startsWith("MPRE") == true &&
+                            !DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.title, it.subtitle, artist.name)
+                    }
+                }
                 .map { item ->
                     Candidate(rank, artist, item, yearOf(item.subtitle), SINGLE.containsMatchIn(item.subtitle))
                 }
@@ -454,33 +529,67 @@ object TopPicks {
      */
     private suspend fun moodQueue(pick: TopPick): Result<List<Song>> = coroutineScope {
         val mood = pick.mood ?: return@coroutineScope Result.failure(IllegalStateException("mood card without a mood"))
-        val shelves = YtMusicRepository.moodGenreShelves(TopPickMood.CATEGORY_BROWSE_ID, mood.params)
-            .getOrElse { return@coroutineScope Result.failure(it) }
-        val playlists = { shelf: HomeShelf -> shelf.items.filter { it.browseId?.startsWith("VL") == true } }
-        val candidates = shelves.filter { playlists(it).isNotEmpty() }
+        val rawShelves = YtMusicRepository.moodGenreShelves(TopPickMood.CATEGORY_BROWSE_ID, mood.params)
+            .getOrNull()
+            .orEmpty()
+        // Strip albums (MPRE*/OLAK*) and Chinese items strictly from Find Your Mood.
+        val playlists = { shelf: HomeShelf ->
+            shelf.items.filter { item ->
+                item.browseId?.startsWith("VL") == true &&
+                    !DiscoveryFilter.isAlbumItem(item) &&
+                    !DiscoveryFilter.isUnwantedDefaultDiscoveryText(item.title, item.subtitle)
+            }
+        }
+        val candidates = rawShelves.filter {
+            !DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.title, it.subtitle) &&
+                playlists(it).isNotEmpty()
+        }
+        val indianTerms = listOf(
+            "indian", "bollywood", "hindi", "punjabi", "tamil", "telugu",
+            "marathi", "bengali", "malayalam", "kannada", "indie", "desi",
+        )
+        val effectiveHints = (pick.hints + regionHints()).distinct()
         val score = { shelf: HomeShelf ->
             val title = shelf.title.lowercase(Locale.ROOT)
-            2 * mood.shelfWords.count { it in title } + pick.hints.count { it.isNotBlank() && it in title }
+            val base = 2 * mood.shelfWords.count { it in title } + effectiveHints.count { it.isNotBlank() && it in title }
+            val indianBonus = if (indianTerms.any { it in title }) 4 else 0
+            base + indianBonus
         }
-        val best = candidates.maxOfOrNull(score)
-            ?: return@coroutineScope Result.failure(IllegalStateException("no playlists for $mood"))
-        // With no scene in common, any shelf of the mood will do.
-        val shelf = candidates.filter { score(it) == best }.random()
-        val chosen = playlists(shelf).take(6).shuffled().take(MOOD_PLAYLISTS)
-        val songs = chosen.map { item ->
-            async {
-                val playlistId = item.browseId!!.removePrefix("VL")
-                // As a watch queue, so YouTube hands over each official video's
-                // song version directly; the playlist page only lists videos.
-                YtMusicRepository.playlistAsAudio(playlistId).getOrNull()?.takeIf { it.isNotEmpty() }
-                    ?: YtMusicRepository.browseSongs(item.browseId!!).getOrNull()?.songs.orEmpty()
-            }
-        }.awaitAll().flatten()
-            // A row YouTube couldn't pair stays the video, and plays as one;
-            // the player menu's version switch turns it into the song.
-            .distinctBy { it.videoId }
-            .shuffled()
-            .take(MOOD_QUEUE)
+        val playlistSongs = if (candidates.isNotEmpty()) {
+            val best = candidates.maxOf(score)
+            val shelf = candidates.filter { score(it) == best }.random()
+            val chosen = playlists(shelf).take(6).shuffled().take(MOOD_PLAYLISTS)
+            val rawSongs = chosen.map { item ->
+                async {
+                    val rawId = item.browseId ?: return@async emptyList()
+                    val playlistId = rawId.removePrefix("VL")
+                    YtMusicRepository.playlistAsAudio(playlistId).getOrNull()?.takeIf { it.isNotEmpty() }
+                        ?: YtMusicRepository.browseSongs(rawId).getOrNull()?.songs.orEmpty()
+                }
+            }.awaitAll().flatten()
+                .filterNot(DiscoveryFilter::isUnwantedDiscoverySong)
+                .distinctBy { it.videoId }
+                .shuffled()
+            DiscoveryRanker.rankSongs(rawSongs, limit = MOOD_QUEUE)
+        } else {
+            emptyList()
+        }
+        val songs = if (playlistSongs.size >= MIN_FILTERED_QUEUE) {
+            playlistSongs
+        } else {
+            val langHint = IndianMusicPreferences.languageLabels().firstOrNull() ?: "Hindi"
+            val extraMoodSongs = YtMusicRepository.indianRecommendationFallback(
+                seedSong = Song(
+                    videoId = "mood_${mood.name}",
+                    title = "${mood.name} $langHint",
+                    artist = langHint,
+                    thumbnailUrl = null,
+                ),
+                excludeIds = playlistSongs.mapTo(HashSet()) { it.videoId },
+                limit = MOOD_QUEUE - playlistSongs.size,
+            )
+            DiscoveryRanker.rankSongs(playlistSongs + extraMoodSongs, limit = MOOD_QUEUE)
+        }
         if (songs.isEmpty()) Result.failure(IllegalStateException("$mood playlists were empty"))
         else Result.success(songs)
     }
@@ -495,15 +604,7 @@ object TopPicks {
     fun moodStation(mood: TopPickMood, hints: List<String> = regionHints()): TopPick =
         TopPick(kind = TopPickKind.MOOD, mood = mood, hints = hints)
 
-    fun regionHints(): List<String> = when (Locale.getDefault().country) {
-        "IN" -> listOf("bollywood", "indian", "hindi", "punjabi", "desi")
-        "PK" -> listOf("pakistani", "urdu", "punjabi")
-        "KR" -> listOf("k-pop", "korean")
-        "JP" -> listOf("j-pop", "japanese")
-        "BR" -> listOf("brazil", "sertanejo", "funk")
-        "MX", "ES", "AR", "CO", "CL", "PE" -> listOf("latin", "latino", "reggaeton")
-        else -> emptyList()
-    }
+    fun regionHints(): List<String> = IndianMusicPreferences.hintTokens()
 
     private val YEAR = Regex("""\b(19|20)\d{2}\b""")
     private val SINGLE = Regex("""\b(Single|EP)\b""")

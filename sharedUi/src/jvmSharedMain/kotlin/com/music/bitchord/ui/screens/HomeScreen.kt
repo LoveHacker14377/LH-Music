@@ -135,9 +135,10 @@ fun HomeScreen(
      * collection opens the album / playlist one.
      */
     onItemLongPress: ((ShelfItem) -> Unit)? = null,
-    // Explore doesn't page — only Home has a continuation worth following.
     onLoadMore: (() -> Unit)? = null,
     loadingMore: Boolean = false,
+    loadMoreError: String? = null,
+    onRetryLoadMore: (() -> Unit)? = null,
     recentlyPlayedLoading: Boolean = false,
     currentSong: Song? = null,
     isPlaying: Boolean = false,
@@ -239,7 +240,17 @@ fun HomeScreen(
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                     )
-                    if (loadingMore) feedMoreSkeleton()
+                    if (loadingMore) {
+                        feedMoreSkeleton()
+                    } else if (loadMoreError != null && onRetryLoadMore != null) {
+                        item(key = "home-load-more-error") {
+                            MessageState(
+                                message = loadMoreError,
+                                actionLabel = stringResource(Res.string.retry),
+                                onAction = onRetryLoadMore,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -251,13 +262,9 @@ fun HomeScreen(
     if (onLoadMore != null && state is UiState.Success) {
         val loadMore by rememberUpdatedState(onLoadMore)
         // Re-checked on every layout change, rather than on the rising edge of
-        // "the tail is in view". A page that appends only a shelf or two leaves
-        // the list still near its end, so an edge-triggered effect would never
-        // fire a second time: the feed dead-ended at the bottom with no
-        // skeleton and no request in flight to explain it. Restarting on
-        // [loadingMore] re-checks the moment a page settles, so the next one is
-        // asked for while the tail is still on screen to show it loading.
-        LaunchedEffect(listState, loadingMore) {
+        // "the tail is in view". Pause automatic retries while an explicit error footer is shown.
+        LaunchedEffect(listState, loadingMore, loadMoreError) {
+            if (loadMoreError != null) return@LaunchedEffect
             snapshotFlow {
                 val layout = listState.layoutInfo
                 (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) to layout.totalItemsCount

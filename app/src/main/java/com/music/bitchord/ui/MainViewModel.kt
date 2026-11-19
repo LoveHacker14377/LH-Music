@@ -12,6 +12,7 @@ import com.music.bitchord.auth.profileId
 import com.music.bitchord.auth.sessionId
 import com.music.bitchord.auth.adjacentProfile
 import com.music.bitchord.data.AppUpdateChecker
+import com.music.bitchord.data.DiscoveryFilter
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.LikeState
 import com.music.bitchord.data.YtMusicRepository
@@ -137,10 +138,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var homeContinuation: String? = null
 
+    /** Cursor-based personalized Indian discovery stages used once/after YouTube continuation completes. */
+    private var homeDiscoveryCursor: YtMusicRepository.IndianDiscoveryCursor? = null
+
     /** Titles already on screen, so a later page can't repeat a shelf. */
     private val homeSeenTitles = mutableSetOf<String>()
 
+    /** Track videoIds already surfaced across Home shelves to keep infinite scroll strictly unique. */
+    private val homeSeenVideoIds = mutableSetOf<String>()
+
     private val _homeLoadingMore = MutableStateFlow(false)
+    private val _homeLoadMoreError = MutableStateFlow<String?>(null)
+    val homeLoadMoreError: StateFlow<String?> = _homeLoadMoreError.asStateFlow()
 
     /**
      * Requests still filling out the first Play page. The core feed and each
@@ -1704,13 +1713,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val generation = homeLoadGeneration.incrementAndGet()
         _home.value = UiState.Loading
         homeContinuation = null
+        homeDiscoveryCursor = YtMusicRepository.buildIndianDiscoveryCursor()
         homeSeenTitles.clear()
+        homeSeenVideoIds.clear()
         _homeLoadingMore.value = false
+        _homeLoadMoreError.value = null
         _homeRecentlyPlayedLoading.value = _signedIn.value
-        // The core feed plus one browse per supplement. Recently played is left
-        // out: it has its own skeleton at the head of the page rather than the
-        // one at the tail.
-        _homePendingShelves.value = 1 + YtMusicRepository.HOME_SUPPLEMENT_BROWSE_IDS.size
+        // Core Home + Personalized New Indian Music + supplements.
+        _homePendingShelves.value = 2 + YtMusicRepository.HOME_SUPPLEMENT_BROWSE_IDS.size
         loadTopPicks(identity, rebuild = false)
         viewModelScope.launch {
             launch {
@@ -1724,6 +1734,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         .onFailure { failure ->
                             if (isCurrentHomeLoad(identity, generation) && _home.value !is UiState.Success) {
                                 _home.value = UiState.Error(failure.friendly())
+                            }
+                        }
+                } finally {
+                    homeShelfRequestSettled(identity, generation)
+                }
+            }
+            launch {
+                try {
+                    val cursor = homeDiscoveryCursor ?: YtMusicRepository.buildIndianDiscoveryCursor()
+                    YtMusicRepository.nextIndianDiscoveryPage(cursor, homeSeenVideoIds.toSet())
+                        .onSuccess { page ->
+                            if (!isCurrentHomeLoad(identity, generation)) return@onSuccess
+                            homeDiscoveryCursor = page.nextCursor
+                            homeSeenVideoIds.addAll(page.deliveredSongIds)
+                            if (page.shelves.isNotEmpty()) {
+                                publishHomeShelves(page.shelves)
                             }
                         }
                 } finally {
@@ -1756,6 +1782,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /** Rebuilds Top Picks cache and reloads personalized Home discovery immediately after saving music preferences. */
+    fun refreshDiscoveryForPreferences() {
+        YtMusicRepository.invalidateDiscoveryCaches()
+        File(getApplication<Application>().filesDir, TOP_PICKS_FILE).delete()
+        topPicksSlotShown = null
+        loadHome()
+    }
+
+    /** Live artist suggestions from YouTube Music for preference selection (excludes CJK results). */
+    suspend fun searchIndianArtists(query: String): List<String> {
+        val clean = query.trim()
+        if (clean.length < 2) return emptyList()
+        return YtMusicRepository.search(clean, SearchFilter.ARTISTS)
+            .getOrNull()
+            .orEmpty()
+            .filterIsInstance<SearchResult.Browse>()
+            .map { it.item }
+            .filter { it.type == BrowseType.ARTIST && !DiscoveryFilter.isUnwantedDefaultDiscoveryText(it.title, it.subtitle) }
+            .map { it.title }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(12)
     }
 
     /**
@@ -1865,6 +1914,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // shelf. The dedicated history endpoint wins and replaces it.
             val replacing = shelves.map { it.title.lowercase(Locale.ROOT) }.toSet()
             homeSeenTitles.addAll(replacing)
+            shelves.forEach { shelf ->
+                shelf.items.mapNotNullTo(homeSeenVideoIds) { it.videoId }
+            }
             _home.value = UiState.Success(shelves + existing.filterNot {
                 it.title.lowercase(Locale.ROOT) in replacing
             })
@@ -1872,22 +1924,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val added = shelves.withoutRepeatsOf(existing)
             .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
+        added.forEach { shelf ->
+            shelf.items.mapNotNullTo(homeSeenVideoIds) { it.videoId }
+        }
         if (added.isNotEmpty()) _home.value = UiState.Success(existing + added)
     }
 
     /** Refreshes the core feed without blanking the current Play page first. */
     private suspend fun refreshHome(identity: String?) = coroutineScope {
         val recent = if (_signedIn.value) async { YtMusicRepository.homeRecentlyPlayed() } else null
+        val discoveryCursor = YtMusicRepository.buildIndianDiscoveryCursor()
+        val discoveryAsync = async { YtMusicRepository.nextIndianDiscoveryPage(discoveryCursor, emptySet()) }
         // Top Picks keeps to its hour; a pull refreshes the feed, not the
         // picks, unless the hour has already turned over.
         if (topPicksJob?.isActive != true) loadTopPicks(identity, rebuild = false)
+        _homeLoadMoreError.value = null
+        homeDiscoveryCursor = discoveryCursor
+        homeSeenVideoIds.clear()
         YtMusicRepository.home().onSuccess { feed ->
             if (identity != listenerKey()) return@onSuccess
             homeContinuation = feed.continuation
             homeSeenTitles.clear()
             val shelves = feed.shelves.withoutRepeatsOf(emptyList())
                 .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
+            shelves.forEach { shelf -> shelf.items.mapNotNullTo(homeSeenVideoIds) { it.videoId } }
             if (shelves.isNotEmpty()) _home.value = UiState.Success(shelves)
+        }
+        discoveryAsync.await().onSuccess { page ->
+            if (identity == listenerKey()) {
+                homeDiscoveryCursor = page.nextCursor
+                homeSeenVideoIds.addAll(page.deliveredSongIds)
+                if (page.shelves.isNotEmpty()) publishHomeShelves(page.shelves)
+            }
         }
         recent?.await()?.onSuccess { shelf ->
             if (identity == listenerKey()) shelf?.let { publishHomeShelves(listOf(it), prepend = true) }
@@ -1895,30 +1963,66 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Called as the Home list nears its end. A no-op while a page is already
-     * in flight, once the feed is exhausted, or before the first page has
-     * loaded — [homeContinuation] covers all three by construction.
+     * Smoothly paginates Home one page at a time as the user nears the bottom:
+     * first follows FEmusic_home continuation (if signed in), then seamlessly
+     * steps through cursor-based personalized Indian new music pages.
      */
     fun loadMoreHome() {
-        val token = homeContinuation ?: return
-        if (_homeLoadingMore.value) return
+        if (_homeLoadingMore.value || _homeLoadMoreError.value != null) return
+        val token = homeContinuation
+        val cursor = homeDiscoveryCursor
+        if (token == null && (cursor == null || !cursor.hasMore)) return
         val identity = listenerKey()
         _homeLoadingMore.value = true
         viewModelScope.launch {
-            YtMusicRepository.moreHome(token).onSuccess { feed ->
-                if (identity == listenerKey()) {
-                    val existing = (_home.value as? UiState.Success)?.data ?: emptyList()
-                    val added = feed.shelves.withoutRepeatsOf(existing)
-                        .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
-                    // A page with nothing new signals the feed has looped back on
-                    // itself rather than run dry with a token still attached —
-                    // treat it the same as exhausted so scrolling can't spin here.
-                    homeContinuation = feed.continuation.takeIf { added.isNotEmpty() }
-                    if (added.isNotEmpty()) _home.value = UiState.Success(existing + added)
+            var loadedAny = false
+            if (token != null) {
+                val moreResult = YtMusicRepository.moreHome(token)
+                moreResult.onSuccess { feed ->
+                    if (identity == listenerKey()) {
+                        val existing = (_home.value as? UiState.Success)?.data ?: emptyList()
+                        val added = feed.shelves.withoutRepeatsOf(existing)
+                            .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
+                        added.forEach { shelf -> shelf.items.mapNotNullTo(homeSeenVideoIds) { it.videoId } }
+                        homeContinuation = feed.continuation.takeIf { added.isNotEmpty() }
+                        if (added.isNotEmpty()) {
+                            _home.value = UiState.Success(existing + added)
+                            loadedAny = true
+                        }
+                    }
+                }.onFailure {
+                    if (identity == listenerKey()) homeContinuation = null
+                }
+            }
+            if (!loadedAny && identity == listenerKey()) {
+                val activeCursor = homeDiscoveryCursor
+                if (activeCursor != null && activeCursor.hasMore) {
+                    YtMusicRepository.nextIndianDiscoveryPage(activeCursor, homeSeenVideoIds.toSet())
+                        .onSuccess { page ->
+                            if (identity != listenerKey()) return@onSuccess
+                            homeDiscoveryCursor = page.nextCursor
+                            homeSeenVideoIds.addAll(page.deliveredSongIds)
+                            val existing = (_home.value as? UiState.Success)?.data ?: emptyList()
+                            val added = page.shelves.withoutRepeatsOf(existing)
+                                .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
+                            if (added.isNotEmpty()) {
+                                _home.value = UiState.Success(existing + added)
+                            }
+                        }
+                        .onFailure { failure ->
+                            if (identity == listenerKey()) {
+                                _homeLoadMoreError.value = failure.friendly()
+                            }
+                        }
                 }
             }
             if (identity == listenerKey()) _homeLoadingMore.value = false
         }
+    }
+
+    fun retryLoadMoreHome() {
+        _homeLoadMoreError.value = null
+        loadMoreHome()
     }
 
     fun loadLibrary() {
